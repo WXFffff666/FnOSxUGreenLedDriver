@@ -1,0 +1,11 @@
+appname               = FnUGreenLed
+version               = 1.0.0
+display_name          = 指示灯控制
+desc                  = 控制绿联 NAS 设备的 LED 指示灯（电源、网络、4个磁盘），支持独立开关和全部开启/关闭。适用于 UGREEN DXP4800 系列设备。
+arch                  = x86_64
+source                = thirdparty
+maintainer            = LEDController
+distributor           = LEDController
+desktop_uidir         = ui
+desktop_applaunchname = FnUGreenLed.Application
+service_port          = 8080

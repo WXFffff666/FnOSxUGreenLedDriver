@@ -1,0 +1,16 @@
+# macOS
+.DS_Store
+
+# Build output
+build/
+
+# IDE / Editor
+.vscode/
+.idea/
+
+# Claude Code local settings (contains personal config)
+.claude/settings.local.json
+
+# Python
+__pycache__/
+*.pyc
