@@ -64,7 +64,7 @@ echo "[3/3] Collecting build artifacts..."
 rm -rf "${BUILD_DIR}"
 mkdir -p "${BUILD_DIR}"
 
-VERSION=$(grep 'version' "${APP_DIR}/manifest" | head -1 | sed 's/.*=\s*//')
+VERSION=$(awk -F '=' '/^version[[:space:]]*=/{gsub(/^[[:space:]]+|[[:space:]]+$/, "", $2); print $2; exit}' "${APP_DIR}/manifest")
 FPK_FILE="${APP_DIR}/FnUGreenLed.fpk"  # fnpack outputs <appname>.fpk in CWD
 
 if [ -f "${FPK_FILE}" ]; then

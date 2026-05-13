@@ -3,6 +3,7 @@
 
 # Build output
 build/
+*.fpk
 
 # IDE / Editor
 .vscode/

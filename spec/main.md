@@ -2,7 +2,7 @@
 
 ## Overview
 
-FnUGreenLed is a native fnOS application that provides LED indicator control for UGREEN DXP4800 series NAS devices. It enables users to independently toggle all 6 front-panel LEDs (power, network, and 4 disk bays) through a skeuomorphic web interface that visually mimics the physical NAS chassis.
+FnUGreenLed is a native fnOS application that provides LED indicator control for UGREEN NAS devices. It lets users control front-panel LEDs for power, network, and disk bays through a skeuomorphic web interface, with per-LED modes for off, solid on, and automatic activity indication.
 
 ## Project History
 
@@ -23,11 +23,26 @@ Rebuilt from scratch using `fnpack create` to generate a standards-compliant pro
 
 - **Self-hosted HTTP server** (`app/server/main.py`): Python HTTP server (instead of CGI), serves embedded HTML/CSS/JS and JSON API
 - **Bundled LED driver**: Static x86_64 binary of `ugreen_leds_cli` cross-compiled via Docker (Alpine Linux, musl-g++) and included in the package
-- **Desktop entry**: Standard `type: "url"` with port 8080 (matches fnpack template pattern)
+- **Desktop entry**: Standard `type: "url"` with port 19580 to avoid common 8080 conflicts
 - **Process management**: Full `cmd/main` lifecycle (start/stop/status) managing the Python server
 - **System integration**: `usr-local-linker` symlinks the bundled CLI to `/usr/local/bin/`
 - Error handling updated to fnOS V1.1.8+ conventions
-- Built and packaged with `fnpack build` → `FnUGreenLed-1.0.0.x86_64.fpk`
+- Built and packaged with `fnpack build` → `FnUGreenLed-1.1.0.x86_64.fpk`
+
+### Version 2.1 — FnUGreenLed v1.1.0 (Current Working Tree)
+
+The current uncommitted code expands the app from fixed DXP4800 manual control into a multi-bay controller:
+
+- **Three LED modes**: `off`, `on`, and `auto`
+- **State persistence**: Saves LED modes to `TRIM_PKGVAR/led_state.json` and restores them on service start
+- **LED probing**: Uses `ugreen_leds_cli all -status` to detect available LEDs and read current hardware modes
+- **Model probing**: Uses DMI product name (`dmidecode --string system-product-name` or `/sys/class/dmi/id/product_name`) to infer known UGREEN model families
+- **Dynamic UI**: Renders disk bays according to detected or configured disk count
+- **Configuration API**: `POST /api/config` can switch disk count manually
+- **Reset API**: `POST /api/reset` clears local config/state and returns the app to the initialization page
+- **Status API**: `GET /api/status` exposes current modes, activity state, detected disk map, and selected network interface
+- **Activity monitoring**: Auto mode polls `/sys/class/net/*/statistics` and `/sys/block/*/stat`
+- **Disk mapping**: Uses ATA mapping by default and applies the upstream DXP6800 slot order override
 
 ## Architecture
 
@@ -37,7 +52,7 @@ Rebuilt from scratch using `fnpack create` to generate a standards-compliant pro
 │  ┌────────────────────────────────────────────────┐  │
 │  │  Browser (new tab)                              │  │
 │  │  ┌──────────────────────────────────────────┐  │  │
-│  │  │  http://127.0.0.1:8080                    │  │  │
+│  │  │  http://127.0.0.1:19580                   │  │  │
 │  │  │  ┌─────────────────────────────────┐     │  │  │
 │  │  │  │  main.py (Python HTTP Server)   │     │  │  │
 │  │  │  │  GET  /     → Embedded HTML/CSS/JS   │  │  │
@@ -59,23 +74,29 @@ Rebuilt from scratch using `fnpack create` to generate a standards-compliant pro
 
 | Feature | Description |
 |---------|-------------|
-| Power LED control | Toggle power indicator on/off |
-| Network LED control | Toggle network activity indicator on/off |
-| Disk bay LED control (×4) | Independently toggle each disk bay indicator |
-| Batch all-on | Turn all 6 LEDs on simultaneously |
-| Batch all-off | Turn all 6 LEDs off simultaneously |
+| Power LED control | Set power indicator to off/on/auto |
+| Network LED control | Set network indicator to off/on/auto; auto follows network traffic |
+| Disk bay LED control | Independently set each detected/configured disk bay indicator |
+| Batch all-on | Set all LEDs to solid on |
+| Batch all-auto | Set all LEDs to automatic mode |
+| Batch all-off | Turn all LEDs off |
+| State persistence | Restore saved LED modes on service start |
+| Dynamic disk count | Detect or manually configure 1-8 disk bays |
+| Hardware state import | Prefer `ugreen_leds_cli all -status` over persisted local state when available |
+| Model-assisted mapping | Uses DMI product name to pick known disk count and ATA mapping |
+| Reset configuration | Clear local config/state and re-enter initialization |
 | Visual feedback | Skeuomorphic toggle switches with LED glow animation |
 | Toast notifications | Success/error messages with auto-dismiss |
 
 ## API Specification
 
-### POST `http://127.0.0.1:8080/api/control`
+### POST `http://127.0.0.1:19580/api/control`
 
 **Request:**
 ```json
 {
-    "led": "power|netdev|disk1|disk2|disk3|disk4",
-    "action": "on|off"
+    "led": "power|netdev|disk1|disk2|...",
+    "action": "off|on|auto"
 }
 ```
 
@@ -83,7 +104,7 @@ Rebuilt from scratch using `fnpack create` to generate a standards-compliant pro
 ```json
 {
     "success": true,
-    "message": "power 已开启"
+    "message": "power → 常亮"
 }
 ```
 
@@ -91,13 +112,41 @@ Rebuilt from scratch using `fnpack create` to generate a standards-compliant pro
 ```json
 {
     "success": false,
-    "message": "无效的指示灯: panel"
+    "message": "无效指示灯: panel"
 }
 ```
 
-### GET `http://127.0.0.1:8080/`
+### GET `http://127.0.0.1:19580/api/status`
 
-Returns the self-contained HTML application page with embedded CSS and JavaScript.
+Returns persisted modes, current auto-mode activity flags, disk map, network interface, and active LED list.
+
+### POST `http://127.0.0.1:19580/api/all/off|on|auto`
+
+Batch-sets every active LED.
+
+### GET/POST `http://127.0.0.1:19580/api/config`
+
+Reads or updates disk count configuration:
+
+```json
+{
+    "disk_count": 6,
+    "model": "manual"
+}
+```
+
+### POST `http://127.0.0.1:19580/api/reset`
+
+Clears local configuration and persisted LED modes:
+
+- `TRIM_PKGVAR/device_config.json`
+- `TRIM_PKGVAR/led_state.json`
+
+After reset, `GET /` returns the initialization page until the user saves a new disk count.
+
+### GET `http://127.0.0.1:19580/`
+
+Returns the initialization page when no local config exists; otherwise returns the self-contained control page with embedded CSS and JavaScript.
 
 ## LED Mapping
 
@@ -109,6 +158,7 @@ Returns the self-contained HTML application page with embedded CSS and JavaScrip
 | `disk2` | Bay 2 LED | Disk slot 2 |
 | `disk3` | Bay 3 LED | Disk slot 3 |
 | `disk4` | Bay 4 LED | Disk slot 4 |
+| `disk5`-`disk8` | Bay 5-8 LED | Present when detected/configured on larger models |
 
 ## UI Design
 
@@ -141,7 +191,7 @@ FnUGreenLed/
 │   │   ├── main.py             # Python HTTP server (embedded HTML/CSS/JS + API)
 │   │   └── ugreen_leds_cli     # Static x86_64 LED driver binary
 │   └── ui/
-│       ├── config              # Desktop entry (url → port 8080)
+│       ├── config              # Desktop entry (url → port 19580)
 │       └── images/
 │           ├── icon_64.png     # 64×64 UI icon
 │           └── icon_256.png    # 256×256 UI icon
@@ -159,7 +209,7 @@ FnUGreenLed/
 │   ├── privilege               # run-as: root (hardware I2C access)
 │   └── resource                # data-share + usr-local-linker
 ├── wizard/                     # User interaction wizards (empty)
-├── manifest                    # App metadata (service_port=8080)
+├── manifest                    # App metadata (service_port=19580)
 ├── ICON.PNG                    # 64×64 App Center icon
 └── ICON_256.PNG                # 256×256 App Center icon
 ```
@@ -169,9 +219,9 @@ FnUGreenLed/
 | Field | Value | Rationale |
 |-------|-------|-----------|
 | `appname` | FnUGreenLed | Unique app identifier |
-| `version` | 1.0.0 | Semantic versioning |
+| `version` | 1.1.0 | Semantic versioning |
 | `display_name` | 指示灯控制 | Chinese display name |
-| `service_port` | 8080 | HTTP server listening port |
+| `service_port` | 19580 | HTTP server listening port |
 | `desktop_uidir` | ui | Standard UI directory |
 | `desktop_applaunchname` | FnUGreenLed.Application | Matches entry key in `app/ui/config` |
 
@@ -182,7 +232,8 @@ FnUGreenLed/
 
 ## Known Limitations
 
-1. **LED state is not persistent**: The `ugreen_leds_cli` tool does not expose a read-status command, so the UI always starts with all LEDs shown as "off" regardless of actual hardware state
-2. **Single device support**: Hardcoded for DXP4800 with exactly 4 disk bays
-3. **No authentication**: API endpoint has no authentication beyond the fnOS desktop session
-4. **x86_64 only**: Compiled driver targets x86 architecture; ARM NAS models not supported
+1. **Hardware truth is write-biased**: The app persists requested LED modes, but `ugreen_leds_cli` is still primarily a write tool; true hardware state can diverge if changed outside the app
+2. **Auto mode is heuristic**: Disk and network activity are inferred from Linux `/sys` counters
+3. **Model detection is not complete**: Current code detects available disk LEDs; full DMI/SMBIOS model matching remains roadmap work
+4. **No authentication**: API endpoint has no authentication beyond the fnOS desktop session
+5. **x86_64 only**: Compiled driver targets x86 architecture; ARM NAS models are not supported

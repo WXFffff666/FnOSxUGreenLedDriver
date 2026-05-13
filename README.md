@@ -1,12 +1,18 @@
 # FnUGreenLed
 
-UGREEN DXP4800 系列 NAS 的 LED 指示灯控制应用，基于 fnOS（飞牛）应用框架开发。
+UGREEN NAS 的 LED 指示灯控制应用，基于 fnOS（飞牛）应用框架开发。
 
 ## 功能
 
-- 控制 DXP4800 NAS 前面板的 6 个 LED 指示灯：电源、网络、4 个磁盘槽位
-- 每个 LED 独立开关
-- 一键全部开启 / 全部关闭
+- 控制 NAS 前面板 LED：电源、网络、磁盘槽位
+- 每个 LED 支持三种模式：关闭、常亮、自动
+- 一键全部常亮 / 全部自动 / 全部关闭
+- LED 模式持久化到应用 var 目录，服务重启后自动恢复
+- 自动探测可用磁盘 LED 数量，并支持手动切换 1-8 盘位
+- 通过 `ugreen_leds_cli all -status` 读取可用 LED 和当前硬件状态
+- 通过 DMI 产品名辅助识别 UGREEN 型号并套用盘位映射
+- 自动模式下根据网络流量和磁盘 I/O 活动切换指示状态
+- 支持重置配置，清空本地配置后重新进入初始化页面
 - 拟物化 UI，模拟 DXP4800 金属外壳外观
 
 ## 项目结构
@@ -57,7 +63,7 @@ docker run --platform linux/amd64 --rm \
 
 ```bash
 fnpack build --directory src
-# 生成 FnUGreenLed-1.0.0.x86_64.fpk
+# 生成 FnUGreenLed-1.1.0.x86_64.fpk
 ```
 
 ## 安装与调试
@@ -73,7 +79,7 @@ cd /path/to/project/src
 appcenter-cli install-local
 
 # 或从 fpk 文件安装
-appcenter-cli install-fpk FnUGreenLed-1.0.0.x86_64.fpk
+appcenter-cli install-fpk FnUGreenLed-1.1.0.x86_64.fpk
 ```
 
 ### NAS 环境检查
@@ -106,23 +112,45 @@ cat /var/apps/FnUGreenLed/var/info.log
 
 ```json
 // Request
-{ "led": "power|netdev|disk1|disk2|disk3|disk4", "action": "on|off" }
+{ "led": "power|netdev|disk1|disk2|...", "action": "off|on|auto" }
 
 // Response (success)
-{ "success": true, "message": "power 已开启" }
+{ "success": true, "message": "power → 常亮" }
 
 // Response (error)
 { "success": false, "message": "无法访问 I2C 设备..." }
 ```
 
+### `GET /api/status`
+
+返回当前 LED 模式、活动状态、磁盘映射和网络接口。
+
+### `POST /api/all/off|on|auto`
+
+批量设置所有已启用 LED 的模式。
+
+### `GET /api/config` / `POST /api/config`
+
+读取或设置当前盘位数量：
+
+```json
+{ "disk_count": 6, "model": "manual" }
+```
+
+`GET /api/config` 同时返回型号探测结果、硬件 LED 列表和探测错误信息，便于排查 I2C/权限/驱动问题。
+
+### `POST /api/reset`
+
+删除 `device_config.json` 与 `led_state.json`，应用回到未初始化状态。下一次访问 `/` 会显示初始化页面。
+
 ## 技术架构
 
 ```
-fnOS 桌面 → 浏览器打开 http://127.0.0.1:8080
+fnOS 桌面 → 浏览器打开 http://127.0.0.1:19580
                 ↓
          main.py (Python HTTP Server)
          GET  /            → HTML 页面（内嵌 CSS/JS）
-         POST /api/control → JSON API
+         /api/*             → JSON API
                 ↓ subprocess
          ugreen_leds_cli (static x86_64)
                 ↓ I2C
@@ -131,7 +159,8 @@ fnOS 桌面 → 浏览器打开 http://127.0.0.1:8080
 
 ## 注意事项
 
-- 仅支持 x86_64 架构（UGREEN DXP4800 系列）
+- 仅支持 x86_64 架构
 - 需要 NAS 内核加载 `i2c-dev` 模块
 - 应用需要 root 权限或 I2C 组权限才能访问硬件
-- LED 状态无法读取（驱动只支持写入），UI 初始状态始终显示为关闭
+- `auto` 模式依赖 Linux `/sys/class/net` 和 `/sys/block` 统计信息
+- CLI 仍是硬件写入工具，真实 LED 状态以应用持久化状态和自动检测结果为准
