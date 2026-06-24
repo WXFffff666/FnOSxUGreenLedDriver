@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-FnUGreenLed v3.0 — LED Controller for UGREEN NAS
+FnUGreenLed v3.1 — LED Controller for UGREEN NAS
 - Three LED states: off / solid on / auto (responsive blink)
 - Disk I/O monitoring via /sys/block/*/stat
 - Network traffic monitoring via /sys/class/net/*/statistics
@@ -486,7 +486,7 @@ class LEDController:
 
 # ── init ──────────────────────────────────────────────────
 
-print(f'FnUGreenLed v3.0  port={PORT}  var={VAR}')
+print(f'FnUGreenLed v3.1  port={PORT}  var={VAR}')
 
 model_info = detect_model()
 led_statuses, probe_error = probe_leds()
@@ -553,18 +553,25 @@ def bay_html(i):
     <button class="mbtn auto" onclick="setLedMode('disk{i}','auto')">◉</button>
     <button class="mbtn off" onclick="setLedMode('disk{i}','off')">○</button>
    </div></div>
-   <input type="color" class="colpick" data-led="disk{i}" value="#00ff88" title="颜色">
+   <div class="presets">
+    <span class="preset" style="background:#ffffff" onclick="setColor('disk{i}','#ffffff')"></span>
+    <span class="preset" style="background:#ff4444" onclick="setColor('disk{i}','#ff4444')"></span>
+    <span class="preset" style="background:#44ff44" onclick="setColor('disk{i}','#44ff44')"></span>
+    <span class="preset" style="background:#4488ff" onclick="setColor('disk{i}','#4488ff')"></span>
+    <span class="preset" style="background:#ffaa00" onclick="setColor('disk{i}','#ffaa00')"></span>
+   </div>
+   <input type="color" class="colpick" data-led="disk{i}" value="#ffffff" title="颜色">
   </div>
  </div>'''
 
 CSS = r'''
-:root{--cb1:#3d3d3d;--cb2:#2a2a2a;--cbr:#1a1a1a;--bb1:#353535;--bb2:#252525;--bbr:#1f1f1f;--bis:inset 0 2px 8px rgba(0,0,0,0.5);--lon:#00ff88;--log:0 0 8px #00ff88,0 0 16px #00ff88,0 0 24px rgba(0,255,136,0.5);--loff:#333;--los:inset 0 1px 2px rgba(0,0,0,0.8);--sto:linear-gradient(180deg,#444 0%,#222 100%);--stn:linear-gradient(180deg,#00aa66 0%,#006633 100%);--sth:linear-gradient(180deg,#666 0%,#444 100%);--sthn:linear-gradient(180deg,#00cc66 0%,#009944 100%);--bp:linear-gradient(180deg,#00aa66 0%,#008844 100%);--bs:linear-gradient(180deg,#555 0%,#333 100%);--t1:#e0e0e0;--t2:#888;--t3:#666}
+:root{--cb1:#3d3d3d;--cb2:#2a2a2a;--cbr:#1a1a1a;--bb1:#353535;--bb2:#252525;--bbr:#1f1f1f;--bis:inset 0 2px 8px rgba(0,0,0,0.5);--lon:#ffffff;--log:0 0 8px #ffffff,0 0 16px #ffffff,0 0 24px rgba(255,255,255,0.5);--loff:#333;--los:inset 0 1px 2px rgba(0,0,0,0.8);--sto:linear-gradient(180deg,#444 0%,#222 100%);--stn:linear-gradient(180deg,#00aa66 0%,#006633 100%);--sth:linear-gradient(180deg,#666 0%,#444 100%);--sthn:linear-gradient(180deg,#00cc66 0%,#009944 100%);--bp:linear-gradient(180deg,#00aa66 0%,#008844 100%);--bs:linear-gradient(180deg,#555 0%,#333 100%);--t1:#e0e0e0;--t2:#888;--t3:#666}
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;background:linear-gradient(135deg,#1a1a1a 0%,#0d0d0d 100%);min-height:100vh;display:flex;justify-content:center;align-items:center;padding:20px}
 .nc{width:100%;max-width:640px}
 .ncase{background:linear-gradient(145deg,var(--cb1) 0%,var(--cb2) 100%);border-radius:20px;border:2px solid var(--cbr);box-shadow:0 20px 60px rgba(0,0,0,0.6),inset 0 1px 0 rgba(255,255,255,0.08);overflow:hidden;backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px)}
 .hbar{display:flex;align-items:center;padding:20px 24px;background:linear-gradient(180deg,rgba(255,255,255,0.05) 0%,transparent 100%);border-bottom:1px solid rgba(0,0,0,0.3)}
-.hicon{width:32px;height:32px;color:var(--lon);filter:drop-shadow(0 0 4px rgba(0,255,136,0.5))}
+.hicon{width:32px;height:32px;color:var(--lon);filter:drop-shadow(0 0 4px rgba(255,255,255,0.5))}
 .htitle{flex:1;font-size:18px;font-weight:600;color:var(--t1);margin-left:12px;letter-spacing:0.5px}
 .sdot{width:8px;height:8px;border-radius:50%;background:var(--lon);box-shadow:0 0 8px var(--lon);animation:pulse 2s ease-in-out infinite}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:0.5}}
@@ -608,7 +615,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica N
 .bnum{font-size:14px;font-weight:700;color:var(--t3);font-family:"SF Mono",Monaco,monospace}
 .bbody{flex:1;display:flex;align-items:center;justify-content:center;padding:8px 0}
 .dicon{width:36px;height:36px;color:var(--t3);opacity:0.5;transition:all 0.3s ease}
-.dbay.active .dicon{color:var(--lon);opacity:0.8;filter:drop-shadow(0 0 4px rgba(0,255,136,0.3))}
+.dbay.active .dicon{color:var(--lon);opacity:0.8;filter:drop-shadow(0 0 4px rgba(255,255,255,0.3))}
 .bfooter{padding-top:4px}
 .fbar{display:flex;gap:12px;padding:20px 24px;background:rgba(0,0,0,0.2);border-top:1px solid rgba(0,0,0,0.3)}
 .abtn{flex:1;display:flex;align-items:center;justify-content:center;gap:8px;padding:14px 20px;background:var(--bp);border:none;border-radius:8px;color:white;font-size:14px;font-weight:600;cursor:pointer;box-shadow:0 4px 8px rgba(0,0,0,0.3),inset 0 1px 0 rgba(255,255,255,0.2);transition:all 0.2s ease}
@@ -635,11 +642,14 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica N
 .mbtn.on.active{background:#00aa66;color:#fff;border-color:#00aa66}
 .mbtn.blink.active{background:#0066aa;color:#fff;border-color:#0066aa}
 .mbtn.auto.active{background:#8a3a00;color:#fff;border-color:#8a3a00}
+.presets{display:flex;gap:4px;margin-top:4px;justify-content:center}
+.preset{width:14px;height:14px;border-radius:50%;cursor:pointer;border:1px solid rgba(255,255,255,0.2);display:inline-block;transition:transform .2s}
+.preset:hover{transform:scale(1.3)}
 .init-panel{padding:28px 24px 24px;border-top:1px solid rgba(255,255,255,0.04)}
 .init-copy{color:var(--t2);font-size:13px;line-height:1.7;margin-bottom:20px}
 .init-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:18px}
 .choice{padding:14px 10px;border-radius:8px;border:1px solid rgba(255,255,255,0.08);background:linear-gradient(145deg,#303030,#242424);color:var(--t1);font-size:13px;font-weight:600;cursor:pointer;box-shadow:var(--bis);transition:all .2s ease}
-.choice:hover,.choice.active{border-color:#00aa66;box-shadow:var(--bis),0 0 0 1px rgba(0,255,136,.25),0 0 18px rgba(0,255,136,.16)}
+.choice:hover,.choice.active{border-color:#00aa66;box-shadow:var(--bis),0 0 0 1px rgba(255,255,255,.25),0 0 18px rgba(255,255,255,.16)}
 .init-actions{display:flex;gap:12px}
 .init-actions .abtn{flex:1}
 @media(max-width:480px){.dgrid{grid-template-columns:repeat(2,1fr)!important}.spanel{flex-direction:column}.divider{width:100%;height:1px;background:linear-gradient(90deg,transparent 0%,rgba(255,255,255,0.1) 50%,transparent 100%)}}
@@ -662,6 +672,7 @@ function cycleMode(led){var order=['off','on','blink','auto'];var idx=order.inde
 function allMode(mode){var labels={'off':'关闭','on':'常亮','blink':'闪烁','auto':'自动'};var label=labels[mode]||mode;toast('正在将所有指示灯设为: '+label);api('POST','/api/all/'+mode,{}).then(function(r){if(r.success){LEDS.forEach(function(led){updateUI(led,mode)});toast('所有指示灯已设为: '+label)}else toast('操作失败: '+r.message,'err')})}
 function resetConfig(){if(!confirm('重置会清空本地配置和保存的指示灯模式，并返回初始化页面。继续吗？'))return;api('POST','/api/reset',{}).then(function(r){if(r.success){toast('配置已重置');setTimeout(function(){location.href='/'},500)}else toast('重置失败: '+r.message,'err')})}
 function pollStatus(){api('GET','/api/status').then(function(r){if(r.success&&r.activity){for(var led in r.activity){if(modes[led]==='auto'){var el=document.getElementById(led+'-led');if(el){el.classList.remove('auto');if(r.activity[led])el.classList.add('on');else el.classList.remove('on')}}}}})}
+function setColor(led,hex){var r=parseInt(hex.substr(1,2),16),g=parseInt(hex.substr(3,2),16),b=parseInt(hex.substr(5,2),16);api('POST','/api/color',{led:led,r:r,g:g,b:b}).then(function(r){if(r.success){var cp=document.querySelector('.colpick[data-led="'+led+'"]');if(cp)cp.value=hex;toast(lname(led)+' 颜色: '+hex)}else toast('颜色设置失败','err')})}
 function init(){
 document.querySelectorAll('.tgl3').forEach(function(t){t.addEventListener('click',function(e){e.preventDefault();e.stopPropagation();var l=t.dataset.led;if(l&&LEDS.indexOf(l)!==-1)cycleMode(l)})});
 document.querySelectorAll('.dbay').forEach(function(b){b.addEventListener('click',function(e){if(e.target.closest('.mbtn')||e.target.closest('.colpick'))return;var l=b.dataset.led;if(l&&LEDS.indexOf(l)!==-1)cycleMode(l)})});
@@ -673,7 +684,7 @@ var resetBtn=document.getElementById('btn-reset');if(resetBtn)resetBtn.addEventL
     var chpwBtn=document.getElementById('btn-change-pw');if(chpwBtn)chpwBtn.addEventListener('click',function(){var oldPw=prompt('请输入旧密码:');if(!oldPw)return;var newPw=prompt('请输入新密码(至少3位):');if(!newPw||newPw.length<3){alert('新密码至少需要3位');return}api('POST','/api/change-password',{old_password:oldPw,new_password:newPw}).then(function(r){if(r.success){alert('密码修改成功！');location.href='/login'}else alert('修改失败: '+r.message)})});
     document.querySelectorAll('.colpick').forEach(function(cp){cp.addEventListener('input',function(){var led=cp.dataset.led;api('POST','/api/color',{led:led,r:parseInt(cp.value.substr(1,2),16),g:parseInt(cp.value.substr(3,2),16),b:parseInt(cp.value.substr(5,2),16)}).then(function(r){if(!r.success)toast('颜色设置失败: '+r.message,'err')})})});
     var brSlider=document.querySelector('.brslider');if(brSlider){brSlider.addEventListener('input',function(){LEDS.forEach(function(led){api('POST','/api/brightness',{led:led,brightness:parseInt(brSlider.value)})})})}
-    var marqBtn=document.getElementById('btn-marquee');if(marqBtn)marqBtn.addEventListener('click',function(){var disks=[];LEDS.forEach(function(l){if(l.match(/^disk/))disks.push(l)});if(disks.length<2)return;disks.forEach(function(d,i){var c=['#ff0000','#00ff00','#0000ff','#ffff00','#ff00ff','#00ffff'];setTimeout(function(){api('POST','/api/color',{led:d,r:parseInt(c[i%6].substr(1,2),16),g:parseInt(c[i%6].substr(3,2),16),b:parseInt(c[i%6].substr(5,2),16)}).then(function(r){if(r.success)api('POST','/api/control',{led:d,action:'auto'})})},i*300)})});
+    var marqBtn=document.getElementById('btn-marquee');if(marqBtn){var marqRunning=false;var marqTimer=null;marqBtn.addEventListener('click',function(){if(marqRunning){clearInterval(marqTimer);marqBtn.textContent='🏃 跑马灯';marqRunning=false;api('POST','/api/all/off',{});return}marqRunning=true;marqBtn.textContent='⏹ 停止';var disks=[];LEDS.forEach(function(l){if(l.match(/^disk/))disks.push(l)});if(disks.length<2)return;var idx=0;marqTimer=setInterval(function(){disks.forEach(function(d,i){api('POST','/api/control',{led:d,action:i===idx?'on':'off'})});idx=(idx+1)%disks.length},300)})}
     LEDS.forEach(function(led){updateUI(led,modes[led]||'off')});
 setInterval(pollStatus,800)
 }
@@ -721,13 +732,27 @@ HTML = r'''<!DOCTYPE html>
     <div class="sitem" data-led="power">
      <div class="sheader"><span class="slabel">电源</span><div class="led" id="power-led"></div></div>
       <div class="tgl3" data-led="power"><div class="trk3"><div class="thm3"></div></div><span class="tlbl3"></span></div>
-      <input type="color" class="colpick" data-led="power" value="#00ff88" title="颜色">
+      <div class="presets">
+       <span class="preset" style="background:#ffffff" onclick="setColor('power','#ffffff')"></span>
+       <span class="preset" style="background:#ff4444" onclick="setColor('power','#ff4444')"></span>
+       <span class="preset" style="background:#44ff44" onclick="setColor('power','#44ff44')"></span>
+       <span class="preset" style="background:#4488ff" onclick="setColor('power','#4488ff')"></span>
+       <span class="preset" style="background:#ffaa00" onclick="setColor('power','#ffaa00')"></span>
+      </div>
+      <input type="color" class="colpick" data-led="power" value="#ffffff" title="颜色">
      </div>
     <div class="divider"></div>
     <div class="sitem" data-led="netdev">
      <div class="sheader"><span class="slabel">网络</span><div class="led" id="netdev-led"></div></div>
       <div class="tgl3" data-led="netdev"><div class="trk3"><div class="thm3"></div></div><span class="tlbl3"></span></div>
-      <input type="color" class="colpick" data-led="netdev" value="#00ff88" title="颜色">
+      <div class="presets">
+       <span class="preset" style="background:#ffffff" onclick="setColor('netdev','#ffffff')"></span>
+       <span class="preset" style="background:#ff4444" onclick="setColor('netdev','#ff4444')"></span>
+       <span class="preset" style="background:#44ff44" onclick="setColor('netdev','#44ff44')"></span>
+       <span class="preset" style="background:#4488ff" onclick="setColor('netdev','#4488ff')"></span>
+       <span class="preset" style="background:#ffaa00" onclick="setColor('netdev','#ffaa00')"></span>
+      </div>
+      <input type="color" class="colpick" data-led="netdev" value="#ffffff" title="颜色">
      </div>
    </div>
   </div>
@@ -1007,6 +1032,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(400, {'success': False, 'message': '新密码至少3位'})
         auth_cfg['password'] = new_pw
         save_json(AUTH_FILE, auth_cfg)
+        print(f'Password changed to: {new_pw}')
         self._json(200, {'success': True, 'message': '密码已修改'})
 
     def _color(self, data):
