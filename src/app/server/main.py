@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-FnUGreenLed v4.0 — LED Controller for UGREEN NAS
+FnUGreenLed v5.0 — LED Controller for UGREEN NAS
 - Three LED states: off / solid on / auto (responsive blink)
 - Disk I/O monitoring via /sys/block/*/stat
 - Network traffic monitoring via /sys/class/net/*/statistics
@@ -18,7 +18,7 @@ import glob
 import re
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
-VALID_MODES = ['off', 'on', 'blink', 'auto']
+VALID_MODES = ['off', 'on', 'auto']
 MAX_DISK_LEDS = 8
 LED_BASE = ['power', 'netdev']
 LED_STATUS_RE = re.compile(
@@ -349,13 +349,6 @@ class LEDController:
             ok, _, err = run(led, '-off')
         elif mode == 'on':
             ok, _, err = run(led, '-on')
-        elif mode == 'blink':
-            args = ['-blink', str(BLINK_ON_MS), str(BLINK_OFF_MS)]
-            if led in self._colors:
-                c = self._colors[led]; args += ['-color', str(c[0]), str(c[1]), str(c[2])]
-            if led in self._brightnesses:
-                args += ['-brightness', str(self._brightnesses[led])]
-            ok, _, err = run(led, *args)
         elif mode == 'auto':
             if activity:
                 args = ['-on']
@@ -460,7 +453,7 @@ class LEDController:
 # ── init ──────────────────────────────────────────────────
 
 try:
-    print(f'FnUGreenLed v4.0  port={PORT}  var={VAR}')
+    print(f'FnUGreenLed v5.0  port={PORT}  var={VAR}')
 
     model_info = detect_model()
     led_statuses, probe_error = probe_leds()
@@ -538,7 +531,6 @@ def bay_html(i):
    <div class="bbody"><div class="dicon"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M2 12h20v6H2zm0-4h20v2H2zm2-6h16c1.1 0 2 .9 2 2v2H2V4c0-1.1.9-2 2-2z"/></svg></div></div>
    <div class="bfooter"><div class="btnrow">
     <button class="mbtn on" onclick="setLedMode('disk{i}','on')">●</button>
-    <button class="mbtn blink" onclick="setLedMode('disk{i}','blink')">✦</button>
     <button class="mbtn auto" onclick="setLedMode('disk{i}','auto')">◉</button>
     <button class="mbtn off" onclick="setLedMode('disk{i}','off')">○</button>
    </div></div>
@@ -647,16 +639,16 @@ JS = r'''
 var LEDS=__LEDS_JSON__;
 var modes=__INIT_MODES__;
 function api(m,p,b){var o={method:m,headers:{'Content-Type':'application/json'}};if(b)o.body=JSON.stringify(b);return fetch(p,o).then(function(r){return r.json()}).catch(function(e){return{success:false,message:e.message}})}
-function updateUI(led,mode,activity){modes[led]=mode;var el=document.getElementById(led+'-led');if(el){el.classList.remove('on','auto');if(mode==='on'||mode==='blink')el.classList.add('on')}
+function updateUI(led,mode,activity){modes[led]=mode;var el=document.getElementById(led+'-led');if(el){el.classList.remove('on','auto');if(mode==='on')el.classList.add('on')}
 var btns=document.querySelectorAll('.mbtn[onclick*="'+led+'"]');btns.forEach(function(b){b.classList.remove('active');if(b.classList.contains(mode))b.classList.add('active')})
 var tgl=document.querySelector('.tgl3[data-led="'+led+'"]');if(tgl){tgl.classList.remove('st0','st1','st2');var labels=['关闭','常亮','自动'];var states=['st0','st1','st2'];var idx=['off','on','auto'].indexOf(mode);if(idx>=0){tgl.classList.add(states[idx]);tgl.querySelector('.tlbl3').textContent=labels[idx]}}
 var bay=document.querySelector('.dbay[data-led="'+led+'"]');if(bay){bay.classList.toggle('active',mode!=='off')}
 var statusDot=document.getElementById('system-status');if(statusDot&&mode!=='off'){statusDot.style.animationName=(mode==='auto')?'autoPulse':'pulse'}}
 function toast(m,t){t=t||'ok';var e=document.getElementById('toast');e.textContent=m;e.className='toast show '+t;setTimeout(function(){e.classList.remove('show')},2500)}
 function lname(l){var m=l.match(/^disk(\d+)$/);if(m)return'磁盘'+m[1]+'灯';if(l==='power')return'电源灯';if(l==='netdev')return'网络灯';return l}
-function setLedMode(led,mode){api('POST','/api/control',{led:led,action:mode}).then(function(r){if(r.success){updateUI(led,mode);var label={'off':'关闭','on':'常亮','blink':'闪烁','auto':'自动'}[mode];toast(lname(led)+' → '+label)}else toast('操作失败: '+r.message,'err')})}
-function cycleMode(led){var order=['off','on','blink','auto'];var idx=order.indexOf(modes[led]||'off');var next=order[(idx+1)%4];setLedMode(led,next)}
-function allMode(mode){var labels={'off':'关闭','on':'常亮','blink':'闪烁','auto':'自动'};var label=labels[mode]||mode;toast('正在将所有指示灯设为: '+label);api('POST','/api/all/'+mode,{}).then(function(r){if(r.success){LEDS.forEach(function(led){updateUI(led,mode)});toast('所有指示灯已设为: '+label)}else toast('操作失败: '+r.message,'err')})}
+function setLedMode(led,mode){api('POST','/api/control',{led:led,action:mode}).then(function(r){if(r.success){updateUI(led,mode);var label={'off':'关闭','on':'常亮','auto':'自动'}[mode];toast(lname(led)+' → '+label)}else toast('操作失败: '+r.message,'err')})}
+function cycleMode(led){var order=['off','on','auto'];var idx=order.indexOf(modes[led]||'off');var next=order[(idx+1)%3];setLedMode(led,next)}
+function allMode(mode){var labels={'off':'关闭','on':'常亮','auto':'自动'};var label=labels[mode]||mode;toast('正在将所有指示灯设为: '+label);api('POST','/api/all/'+mode,{}).then(function(r){if(r.success){LEDS.forEach(function(led){updateUI(led,mode)});toast('所有指示灯已设为: '+label)}else toast('操作失败: '+r.message,'err')})}
 function resetConfig(){if(!confirm('重置会清空本地配置和保存的指示灯模式，并返回初始化页面。继续吗？'))return;api('POST','/api/reset',{}).then(function(r){if(r.success){toast('配置已重置');setTimeout(function(){location.href='/'},500)}else toast('重置失败: '+r.message,'err')})}
 function pollStatus(){api('GET','/api/status').then(function(r){if(r.success&&r.activity){for(var led in r.activity){if(modes[led]==='auto'){var el=document.getElementById(led+'-led');if(el){el.classList.remove('auto');if(r.activity[led])el.classList.add('on');else el.classList.remove('on')}}}}})}
 function setColor(led,hex){var r=parseInt(hex.substr(1,2),16),g=parseInt(hex.substr(3,2),16),b=parseInt(hex.substr(5,2),16);api('POST','/api/color',{led:led,r:r,g:g,b:b}).then(function(r){if(r.success){var cp=document.querySelector('.colpick[data-led="'+led+'"]');if(cp)cp.value=hex;toast(lname(led)+' 颜色: '+hex)}else toast('颜色设置失败','err')})}
@@ -891,7 +883,7 @@ class Handler(BaseHTTPRequestHandler):
             self._change_password(data)
         elif self.path == '/api/auth-status':
             self._json(200, {'authenticated': check_auth(self.headers)})
-        elif self.path in ('/api/all/off', '/api/all/on', '/api/all/blink', '/api/all/auto'):
+        elif self.path in ('/api/all/off', '/api/all/on', '/api/all/auto'):
             mode = self.path.rsplit('/', 1)[-1]
             self._all(mode)
         elif self.path == '/api/config':
@@ -914,7 +906,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(400, {'success': False, 'message': f'无效模式: {mode}'})
         ok, message = ctrl.set_mode(led, mode)
         if ok:
-            labels = {'off': '关闭', 'on': '常亮', 'blink': '闪烁', 'auto': '自动'}
+            labels = {'off': '关闭', 'on': '常亮', 'auto': '自动'}
             self._json(200, {'success': True, 'message': f'{led} → {labels[mode]}'})
         else:
             self._json(500, {'success': False, 'message': message or '设置失败'})
@@ -927,7 +919,7 @@ class Handler(BaseHTTPRequestHandler):
                 errors.append(f'{led}: {message}')
         if errors:
             return self._json(500, {'success': False, 'message': '; '.join(errors)})
-        labels = {'off': '关闭', 'on': '常亮', 'blink': '闪烁', 'auto': '自动'}
+        labels = {'off': '关闭', 'on': '常亮', 'auto': '自动'}
         self._json(200, {'success': True, 'message': f'所有指示灯 → {labels[mode]}'})
 
     def _set_config(self, data):
