@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-FnUGreenLed v5.5 — LED Controller for UGREEN NAS
+FnUGreenLed v5.6 — LED Controller for UGREEN NAS
 - Three LED states: off / solid on / auto (responsive blink)
 - Disk I/O monitoring via /sys/block/*/stat
 - Network traffic monitoring via /sys/class/net/*/statistics
@@ -335,9 +335,17 @@ class LEDController:
         elif mode == 'on':
             ok, _, err = run(led, '-on', '-color', '255', '255', '255')
         elif mode == 'auto':
-            if activity:
-                ok, _, err = run(led, '-on', '-color', '255', '255', '255')
+            # Check hardware presence
+            if led == 'netdev' and not self._net_iface:
+                ok, _, err = run(led, '-off')
+            elif led.startswith('disk'):
+                m = re.match(r'disk(\d+)', led)
+                if m and int(m.group(1)) not in self._disk_map:
+                    ok, _, err = run(led, '-off')
+                else:
+                    ok, _, err = run(led, '-on', '-color', '255', '255', '255')
             else:
+                # power LED or hardware present: turn on
                 ok, _, err = run(led, '-on', '-color', '255', '255', '255')
         else:
             return False, f'Invalid mode: {mode}'
@@ -421,7 +429,7 @@ class LEDController:
 
 # ── init ──────────────────────────────────────────────────
 
-print(f'FnUGreenLed v5.5  port={PORT}  var={VAR}')
+print(f'FnUGreenLed v5.6  port={PORT}  var={VAR}')
 
 auth_cfg = load_json(AUTH_FILE, {})
 if 'password' not in auth_cfg:
@@ -588,6 +596,7 @@ document.getElementById('btn-all-on').addEventListener('click',function(){allMod
 document.getElementById('btn-all-off').addEventListener('click',function(){allMode('off')});
 var autoBtn=document.getElementById('btn-all-auto');if(autoBtn)autoBtn.addEventListener('click',function(){allMode('auto')});
 var resetBtn=document.getElementById('btn-reset');if(resetBtn)resetBtn.addEventListener('click',resetConfig);
+var svBtn=document.getElementById('btn-save');if(svBtn)svBtn.addEventListener('click',function(){fetch('/api/save',{method:'POST',headers:{'Content-Type':'application/json'}}).then(function(r){return r.json()}).then(function(d){if(d.success)toast('配置已保存');else toast('保存失败','err')})});
 var cpw=document.getElementById('btn-cpw');if(cpw)cpw.addEventListener('click',function(){document.getElementById('pwform').classList.add('show')});
 LEDS.forEach(function(led){updateUI(led,modes[led]||'off')});
 setInterval(pollStatus,800);
@@ -668,6 +677,7 @@ HTML = r'''<!DOCTYPE html>
   </div>
   <div class="fbar">
     <button class="abtn" id="btn-cpw" style="background:linear-gradient(180deg,#666 0%,#444 100%)"><span class="bicon"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm3.1-9H8.9V6c0-1.71 1.39-3.1 3.1-3.1s3.1 1.39 3.1 3.1v2z"/></svg></span>修改密码</button>
+    <button class="abtn" id="btn-save" style="background:linear-gradient(180deg,#0066aa 0%,#003366 100%)"><span class="bicon"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M17 3H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V7l-4-4zm-5 16c-1.66 0-3-1.34-3-3s1.34-3 3-3 3 1.34 3 3-1.34 3-3 3zm3-10H5V5h10v4z"/></svg></span>保存配置</button>
     <button class="abtn danger" id="btn-reset"><span class="bicon"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 5V2L7 7l5 5V9c2.76 0 5 2.24 5 5 0 1.04-.32 2-.86 2.8l1.46 1.46C18.48 17.08 19 15.6 19 14c0-3.87-3.13-7-7-7zm-5.6.74C5.52 6.92 5 8.4 5 10c0 3.87 3.13 7 7 7v3l5-5-5-5v3c-2.76 0-5-2.24-5-5 0-1.04.32-2 .86-2.8L6.4 5.74z"/></svg></span>重置配置</button>
   </div>
  </div>
@@ -783,6 +793,9 @@ class Handler(BaseHTTPRequestHandler):
             self._control(data)
         elif self.path == '/api/color':
             self._color(data)
+        elif self.path == '/api/save':
+            ctrl._persist()
+            self._json(200, {'success': True, 'message': '配置已保存'})
         elif self.path == '/api/change-password':
             self._change_password(data)
         elif self.path in ('/api/all/off', '/api/all/on', '/api/all/auto'):
