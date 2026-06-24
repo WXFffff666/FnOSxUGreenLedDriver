@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-FnUGreenLed v5.1 — LED Controller for UGREEN NAS
+FnUGreenLed v5.2 — LED Controller for UGREEN NAS
 - Three LED states: off / solid on / auto (responsive blink)
 - Disk I/O monitoring via /sys/block/*/stat
 - Network traffic monitoring via /sys/class/net/*/statistics
@@ -299,6 +299,9 @@ class LEDController:
                 mode = 'off'
             self.modes[led] = mode
             self.activity[led] = False
+            # Power LED always on in auto mode (system is running)
+            if led == 'power' and mode == 'auto':
+                run(led, '-on', '-color', '255', '255', '255')
             if apply_hardware and led not in hardware_modes:
                 ok, msg = self._apply(led, mode, activity=False)
                 if not ok:
@@ -322,12 +325,12 @@ class LEDController:
         if mode == 'off':
             ok, _, err = run(led, '-off')
         elif mode == 'on':
-            ok, _, err = run(led, '-on')
+            ok, _, err = run(led, '-on', '-color', '255', '255', '255')
         elif mode == 'auto':
             if activity:
                 ok, _, err = run(led, '-blink', str(BLINK_ON_MS), str(BLINK_OFF_MS))
             else:
-                ok, _, err = run(led, '-on')
+                ok, _, err = run(led, '-on', '-color', '255', '255', '255')
         else:
             return False, f'Invalid mode: {mode}'
         return ok, err or 'OK'
@@ -409,7 +412,7 @@ class LEDController:
 
 # ── init ──────────────────────────────────────────────────
 
-print(f'FnUGreenLed v5.1  port={PORT}  var={VAR}')
+print(f'FnUGreenLed v5.2  port={PORT}  var={VAR}')
 
 auth_cfg = load_json(AUTH_FILE, {})
 if 'password' not in auth_cfg:
@@ -567,6 +570,7 @@ document.getElementById('btn-all-on').addEventListener('click',function(){allMod
 document.getElementById('btn-all-off').addEventListener('click',function(){allMode('off')});
 var autoBtn=document.getElementById('btn-all-auto');if(autoBtn)autoBtn.addEventListener('click',function(){allMode('auto')});
 var resetBtn=document.getElementById('btn-reset');if(resetBtn)resetBtn.addEventListener('click',resetConfig);
+var cpw=document.getElementById('btn-cpw');if(cpw)cpw.addEventListener('click',function(){var o=prompt('旧密码:');if(!o)return;var n=prompt('新密码(≥3位):');if(!n||n.length<3){alert('至少3位');return}fetch('/api/change-password',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({old_password:o,new_password:n})}).then(function(r){return r.json()}).then(function(d){if(d.success){alert('密码已修改!');location.href='/'}else alert(d.message)})});
 LEDS.forEach(function(led){updateUI(led,modes[led]||'off')});
 setInterval(pollStatus,800);
 LEDS.forEach(function(led){
@@ -645,7 +649,8 @@ HTML = r'''<!DOCTYPE html>
    <button class="abtn s" id="btn-all-off"><span class="bicon"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg></span>全部关闭</button>
   </div>
   <div class="fbar">
-   <button class="abtn danger" id="btn-reset"><span class="bicon"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 5V2L7 7l5 5V9c2.76 0 5 2.24 5 5 0 1.04-.32 2-.86 2.8l1.46 1.46C18.48 17.08 19 15.6 19 14c0-3.87-3.13-7-7-7zm-5.6.74C5.52 6.92 5 8.4 5 10c0 3.87 3.13 7 7 7v3l5-5-5-5v3c-2.76 0-5-2.24-5-5 0-1.04.32-2 .86-2.8L6.4 5.74z"/></svg></span>重置配置</button>
+    <button class="abtn" id="btn-cpw" style="background:linear-gradient(180deg,#666 0%,#444 100%)"><span class="bicon"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm3.1-9H8.9V6c0-1.71 1.39-3.1 3.1-3.1s3.1 1.39 3.1 3.1v2z"/></svg></span>修改密码</button>
+    <button class="abtn danger" id="btn-reset"><span class="bicon"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 5V2L7 7l5 5V9c2.76 0 5 2.24 5 5 0 1.04-.32 2-.86 2.8l1.46 1.46C18.48 17.08 19 15.6 19 14c0-3.87-3.13-7-7-7zm-5.6.74C5.52 6.92 5 8.4 5 10c0 3.87 3.13 7 7 7v3l5-5-5-5v3c-2.76 0-5-2.24-5-5 0-1.04.32-2 .86-2.8L6.4 5.74z"/></svg></span>重置配置</button>
   </div>
  </div>
 </div>
