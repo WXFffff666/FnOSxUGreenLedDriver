@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-FnUGreenLed v3.1 — LED Controller for UGREEN NAS
+FnUGreenLed v4.0 — LED Controller for UGREEN NAS
 - Three LED states: off / solid on / auto (responsive blink)
 - Disk I/O monitoring via /sys/block/*/stat
 - Network traffic monitoring via /sys/class/net/*/statistics
@@ -234,8 +234,8 @@ def detect_disks():
                             disks[slot] = dev
                     except (ValueError, IndexError):
                         pass
-    except Exception:
-        pass
+            except Exception as e:
+                print(f'Monitor error: {e}')
     if not disks:
         infos = [block_device_info(p) for p in sorted(glob.glob('/sys/block/sd*'))]
         for idx, info in enumerate(infos, start=1):
@@ -320,26 +320,15 @@ class LEDController:
         hardware_modes = hardware_modes or {}
         saved = load_json(STATE_FILE, {})
         for led in self.leds:
-            mode = hardware_modes.get(led, saved.get(led, 'auto'))
+            mode = hardware_modes.get(led, saved.get(led, 'off'))
             if mode not in VALID_MODES:
                 mode = 'off'
-            # Force empty disk bays to 'off'
-            if led.startswith('disk'):
-                m = re.match(r'disk(\d+)', led)
-                if m and not self._disk_presence.get(int(m.group(1)), False):
-                    mode = 'off'
             self.modes[led] = mode
             self.activity[led] = False
             if apply_hardware and led not in hardware_modes:
                 ok, msg = self._apply(led, mode, activity=False)
                 if not ok:
                     print(f'Restore {led} failed: {msg}')
-                if ok:
-                    if led in self._colors:
-                        c = self._colors[led]
-                        run(led, '-color', str(c[0]), str(c[1]), str(c[2]))
-                    if led in self._brightnesses:
-                        run(led, '-brightness', str(self._brightnesses[led]))
         print(f'Restored state: {self.modes}')
 
     def set_mode(self, led, mode):
@@ -356,11 +345,6 @@ class LEDController:
 
     def _apply(self, led, mode, activity=False):
         """Set hardware LED state based on mode and activity."""
-        # Empty disk bay: auto mode = stay off; on/off = user wants control
-        if led.startswith('disk') and mode == 'auto':
-            m = re.match(r'disk(\d+)', led)
-            if m and not self._disk_presence.get(int(m.group(1)), False):
-                return True, 'OK'
         if mode == 'off':
             ok, _, err = run(led, '-off')
         elif mode == 'on':
@@ -374,20 +358,14 @@ class LEDController:
             ok, _, err = run(led, *args)
         elif mode == 'auto':
             if activity:
-                args = ['-blink', str(BLINK_ON_MS), str(BLINK_OFF_MS)]
-                if led in self._colors:
-                    c = self._colors[led]; args += ['-color', str(c[0]), str(c[1]), str(c[2])]
-                if led in self._brightnesses:
-                    args += ['-brightness', str(self._brightnesses[led])]
-                ok, _, err = run(led, *args)
-            else:
-                # Drive present, no activity: show solid ON with color
                 args = ['-on']
                 if led in self._colors:
                     c = self._colors[led]; args += ['-color', str(c[0]), str(c[1]), str(c[2])]
                 if led in self._brightnesses:
                     args += ['-brightness', str(self._brightnesses[led])]
                 ok, _, err = run(led, *args)
+            else:
+                ok, _, err = run(led, '-off')
         else:
             return False, f'Invalid mode: {mode}'
         return ok, err or 'OK'
@@ -431,8 +409,8 @@ class LEDController:
                         self._disk_presence = detect_disk_presence(new_map)
                 self._check_network()
                 self._check_disks()
-            except Exception:
-                pass
+            except Exception as e:
+                print(f'Monitor error: {e}')
 
     def _check_network(self):
         led = 'netdev'
@@ -481,7 +459,7 @@ class LEDController:
 
 # ── init ──────────────────────────────────────────────────
 
-print(f'FnUGreenLed v3.1  port={PORT}  var={VAR}')
+print(f'FnUGreenLed v4.0  port={PORT}  var={VAR}')
 
 model_info = detect_model()
 led_statuses, probe_error = probe_leds()
@@ -498,10 +476,6 @@ if 'password' not in auth_cfg:
     save_json(AUTH_FILE, auth_cfg)
     print(f'Default admin password set: {AUTH_PASSWORD}')
 
-# Invalidate any previous session from old install/upgrade
-if auth_cfg.get('session'):
-    auth_cfg['session'] = ''
-    save_json(AUTH_FILE, auth_cfg)
 need_auth = True
 
 initialized = os.path.exists(CONFIG_FILE)
@@ -585,8 +559,6 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica N
 .led.auto{background:radial-gradient(circle at 30% 30%,var(--lon) 0%,#00cc66 50%,#008844 100%);box-shadow:var(--log);border-color:#006633;animation:autoPulse 1.5s ease-in-out infinite}
 .led.sm{width:14px;height:14px}
 .colpick{width:24px;height:24px;border:none;background:transparent;cursor:pointer;padding:0}
-.brslider{width:60px;height:4px;-webkit-appearance:none;background:#444;border-radius:2px;outline:none;margin-left:8px}
-.brslider::-webkit-slider-thumb{-webkit-appearance:none;width:12px;height:12px;border-radius:50%;background:var(--lon);cursor:pointer}
 /* 3-state toggle */
 .tgl3{display:flex;flex-direction:column;align-items:center;gap:6px;cursor:pointer;user-select:none}
 .trk3{width:62px;height:30px;background:var(--sto);border-radius:15px;border:2px solid #111;position:relative;box-shadow:inset 0 2px 4px rgba(0,0,0,0.5),0 1px 0 rgba(255,255,255,0.1);transition:all 0.3s ease}
@@ -679,7 +651,6 @@ var autoBtn=document.getElementById('btn-all-auto');if(autoBtn)autoBtn.addEventL
 var resetBtn=document.getElementById('btn-reset');if(resetBtn)resetBtn.addEventListener('click',resetConfig);
     var chpwBtn=document.getElementById('btn-change-pw');if(chpwBtn)chpwBtn.addEventListener('click',function(){var oldPw=prompt('请输入旧密码:');if(!oldPw)return;var newPw=prompt('请输入新密码(至少3位):');if(!newPw||newPw.length<3){alert('新密码至少需要3位');return}api('POST','/api/change-password',{old_password:oldPw,new_password:newPw}).then(function(r){if(r.success){alert('密码修改成功！');location.href='/login'}else alert('修改失败: '+r.message)})});
     document.querySelectorAll('.colpick').forEach(function(cp){cp.addEventListener('input',function(){var led=cp.dataset.led;api('POST','/api/color',{led:led,r:parseInt(cp.value.substr(1,2),16),g:parseInt(cp.value.substr(3,2),16),b:parseInt(cp.value.substr(5,2),16)}).then(function(r){if(!r.success)toast('颜色设置失败: '+r.message,'err')})})});
-    var brSlider=document.querySelector('.brslider');if(brSlider){brSlider.addEventListener('input',function(){LEDS.forEach(function(led){api('POST','/api/brightness',{led:led,brightness:parseInt(brSlider.value)})})})}
     var marqBtn=document.getElementById('btn-marquee');if(marqBtn){var marqRunning=false;var marqTimer=null;marqBtn.addEventListener('click',function(){if(marqRunning){clearInterval(marqTimer);marqBtn.textContent='🏃 跑马灯';marqRunning=false;api('POST','/api/all/off',{});return}marqRunning=true;marqBtn.textContent='⏹ 停止';var disks=[];LEDS.forEach(function(l){if(l.match(/^disk/))disks.push(l)});if(disks.length<2)return;var idx=0;marqTimer=setInterval(function(){disks.forEach(function(d,i){api('POST','/api/control',{led:d,action:i===idx?'on':'off'})});idx=(idx+1)%disks.length},300)})}
     LEDS.forEach(function(led){updateUI(led,modes[led]||'off')});
 setInterval(pollStatus,800)
@@ -715,7 +686,6 @@ HTML = r'''<!DOCTYPE html>
    <div class="hicon"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg></div>
    <h1 class="htitle">指示灯控制</h1>
    <span class="badge">{disk_count}盘位</span>
-   <input type="range" class="brslider" min="0" max="255" value="255" title="亮度">
    <div class="hstatus"><span class="sdot" id="system-status"></span></div>
   </div>
   <div class="legend">
@@ -833,7 +803,7 @@ LOGIN_HTML = r'''<!DOCTYPE html>
   </div>
  </div>
 </div>
-<script>function doLogin(){var pw=document.getElementById('pw').value;if(!pw)return;fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:pw})}).then(function(r){return r.json()}).then(function(d){if(d.success)location.href='/';else alert('密码错误')})}</script>
+<script>function doLogin(){var pw=document.getElementById('pw').value;if(!pw)return;fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:pw})}).then(function(r){return r.json()}).then(function(d){if(d.success)location.href='/';else alert('密码错误')}).catch(function(e){alert('网络错误')})}</script>
 </body>
 </html>'''
 
@@ -938,7 +908,7 @@ class Handler(BaseHTTPRequestHandler):
                 errors.append(f'{led}: {message}')
         if errors:
             return self._json(500, {'success': False, 'message': '; '.join(errors)})
-        labels = {'off': '关闭', 'on': '常亮', 'auto': '自动'}
+        labels = {'off': '关闭', 'on': '常亮', 'blink': '闪烁', 'auto': '自动'}
         self._json(200, {'success': True, 'message': f'所有指示灯 → {labels[mode]}'})
 
     def _set_config(self, data):
@@ -1006,7 +976,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _login(self, data):
         password = data.get('password', '')
-        if password == AUTH_PASSWORD:
+        if password == auth_cfg.get('password', 'admin123'):
             session_token = base64.b64encode(secrets.token_bytes(32)).decode()
             auth_cfg['session'] = session_token
             save_json(AUTH_FILE, auth_cfg)
@@ -1035,6 +1005,10 @@ class Handler(BaseHTTPRequestHandler):
         r = data.get('r', 0)
         g = data.get('g', 0)
         b = data.get('b', 0)
+        try: r, g, b = int(r), int(g), int(b)
+        except (ValueError, TypeError): return self._json(400, {'success': False, 'message': 'Invalid color values'})
+        if not (0 <= r <= 255 and 0 <= g <= 255 and 0 <= b <= 255):
+            return self._json(400, {'success': False, 'message': 'Color values must be 0-255'})
         if led not in led_names:
             return self._json(400, {'success': False, 'message': f'无效指示灯: {led}'})
         if led.startswith('disk'):
@@ -1052,6 +1026,10 @@ class Handler(BaseHTTPRequestHandler):
     def _brightness(self, data):
         led = data.get('led', '')
         brightness = data.get('brightness', 0)
+        try: brightness = int(brightness)
+        except (ValueError, TypeError): return self._json(400, {'success': False, 'message': 'Invalid brightness'})
+        if not 0 <= brightness <= 255:
+            return self._json(400, {'success': False, 'message': 'Brightness must be 0-255'})
         if led not in led_names:
             return self._json(400, {'success': False, 'message': f'无效指示灯: {led}'})
         if led.startswith('disk'):
