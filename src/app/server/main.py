@@ -216,17 +216,26 @@ def block_device_info(sdp):
     return {'dev': dev, 'ata': ata, 'hctl': hctl, 'serial': serial}
 
 def detect_disks():
-    """Map disk slots to /sys/block devices using the upstream ATA mapping strategy."""
+    """Map disk slots to /sys/block devices using lsblk."""
     disks = {}
-    infos = [block_device_info(p) for p in sorted(glob.glob('/sys/block/sd*'))]
-    by_ata = {info['ata']: info['dev'] for info in infos if info['ata']}
-    ata_map = cfg.get('ata_map') or model_info.get('ata_map') or [f'ata{i}' for i in range(1, MAX_DISK_LEDS + 1)]
-    for idx, ata in enumerate(ata_map, start=1):
-        dev = by_ata.get(ata)
-        if dev:
-            disks[idx] = dev
-
+    try:
+        ok, out, _ = run_cmd('lsblk', '-S', '-o', 'NAME,HCTL')
+        if ok:
+            for line in out.strip().split('\n'):
+                parts = line.strip().split()
+                if len(parts) >= 2 and parts[0].startswith('sd'):
+                    dev = parts[0]
+                    hctl = parts[1]
+                    try:
+                        slot = int(hctl.split(':')[0]) + 1
+                        if 1 <= slot <= 8:
+                            disks[slot] = dev
+                    except (ValueError, IndexError):
+                        pass
+    except Exception:
+        pass
     if not disks:
+        infos = [block_device_info(p) for p in sorted(glob.glob('/sys/block/sd*'))]
         for idx, info in enumerate(infos, start=1):
             disks[idx] = info['dev']
     return disks
@@ -318,7 +327,7 @@ class LEDController:
             if activity:
                 ok, _, err = run(led, '-blink', str(BLINK_ON_MS), str(BLINK_OFF_MS))
             else:
-                ok, _, err = run(led, '-off')
+                ok, _, err = run(led, '-on')
         else:
             return False, f'Invalid mode: {mode}'
         return ok, err or 'OK'
@@ -564,7 +573,7 @@ LEDS.forEach(function(led){
   var el=document.querySelector('[data-led="'+led+'"]');
   if(el){
     var cp=document.createElement('input');
-    cp.type='color';cp.value='#00ff88';cp.style.cssText='width:20px;height:20px;border:none;background:transparent;cursor:pointer;margin-left:8px';
+    cp.type='color';cp.value='#ffffff';cp.style.cssText='width:20px;height:20px;border:none;background:transparent;cursor:pointer;margin-left:8px';
     cp.addEventListener('input',function(){
       var v=cp.value;
       fetch('/api/color',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({led:led,r:parseInt(v.substr(1,2),16),g:parseInt(v.substr(3,2),16),b:parseInt(v.substr(5,2),16)})}).then(function(r){return r.json()});
@@ -750,6 +759,8 @@ class Handler(BaseHTTPRequestHandler):
             self._control(data)
         elif self.path == '/api/color':
             self._color(data)
+        elif self.path == '/api/change-password':
+            self._change_password(data)
         elif self.path in ('/api/all/off', '/api/all/on', '/api/all/auto'):
             mode = self.path.rsplit('/', 1)[-1]
             self._all(mode)
@@ -850,6 +861,17 @@ class Handler(BaseHTTPRequestHandler):
         ctrl.restore_state(hardware_modes=hardware_modes, apply_hardware=False)
         ctrl.start_monitor()
         self._json(200, {'success': True, 'message': '配置已重置', 'initialized': initialized})
+
+    def _change_password(self, data):
+        old_pw = data.get('old_password', '')
+        new_pw = data.get('new_password', '')
+        if old_pw != auth_cfg.get('password', ''):
+            return self._json(400, {'success': False, 'message': '旧密码错误'})
+        if not new_pw or len(new_pw) < 3:
+            return self._json(400, {'success': False, 'message': '新密码至少3位'})
+        auth_cfg['password'] = new_pw
+        save_json(AUTH_FILE, auth_cfg)
+        self._json(200, {'success': True, 'message': '密码已修改'})
 
     def _color(self, data):
         led = data.get('led', '')
