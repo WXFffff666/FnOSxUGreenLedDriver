@@ -6,16 +6,22 @@ PID_FILE="${TRIM_PKGVAR}/app.pid"
 CMD="python3 ${TRIM_APPDEST}/server/main.py"
 
 log_msg() {
-    echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" >> ${LOG_FILE}
+    local msg="$(date '+%Y-%m-%d %H:%M:%S') - $1"
+    echo "$msg"
+    if [ -n "${TRIM_PKGVAR}" ] && [ -d "${TRIM_PKGVAR}" ]; then
+        echo "$msg" >> "${LOG_FILE}" 2>/dev/null
+    fi
 }
 
 start_process() {
+    log_msg "start_process called, TRIM_PKGVAR=${TRIM_PKGVAR}, TRIM_APPDEST=${TRIM_APPDEST}"
     if status; then
         return 0
     fi
 
     log_msg "Starting process ..."
-    bash -c "${CMD}" >> ${LOG_FILE} 2>&1 &
+    log_msg "Command: ${CMD}"
+    nohup bash -c "${CMD}" >> "${LOG_FILE}" 2>&1 &
     printf "%s" "$!" > ${PID_FILE}
     return 0
 }
