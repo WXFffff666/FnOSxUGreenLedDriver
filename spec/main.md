@@ -29,7 +29,7 @@ Rebuilt from scratch using `fnpack create` to generate a standards-compliant pro
 - Error handling updated to fnOS V1.1.8+ conventions
 - Built and packaged with `fnpack build` → `FnUGreenLed-1.1.0.x86_64.fpk`
 
-### Version 2.1 — FnUGreenLed v1.1.0 (Current Working Tree)
+### Version 2.1 — FnUGreenLed v1.1.0
 
 The current uncommitted code expands the app from fixed DXP4800 manual control into a multi-bay controller:
 
@@ -43,6 +43,17 @@ The current uncommitted code expands the app from fixed DXP4800 manual control i
 - **Status API**: `GET /api/status` exposes current modes, activity state, detected disk map, and selected network interface
 - **Activity monitoring**: Auto mode polls `/sys/class/net/*/statistics` and `/sys/block/*/stat`
 - **Disk mapping**: Uses ATA mapping by default and applies the upstream DXP6800 slot order override
+
+### Version 2.2 — FnUGreenLed v1.2.0 (Current)
+
+Released June 2026. Adds explicit DXP4800 Plus model support:
+
+- **DXP4800 Plus model profile**: Dual-prefix DMI matching (`DXP4800Plus` + `DXP4800 Plus`) added to `MODEL_PROFILES` before the generic `DXP4800` entry, ensuring correct model ID assignment for devices whose DMI product name includes "Plus"
+- **Same hardware protocol**: DXP4800 Plus confirmed to use identical I2C protocol (bus 1, addr 0x3a) and ATA slot mapping (ata1-ata4) as DXP4800 — upstream `miskcoo/ugreen_leds_controller` and community (Kerryliu TrueNAS guide) corroborate this
+- **LED driver recompiled**: `ugreen_leds_cli` rebuilt from latest upstream HEAD via Docker Alpine cross-compilation
+- **Device assets marked verified**: `assets/devices/dxp4800plus/config.json` and `assets/devices/devices.json` updated to `verified: true`
+- **Roadmap and README**: Documentation updated to reflect verified DXP4800 Plus support
+- **fnpack build output**: `FnUGreenLed-1.2.0.x86_64.fpk`
 
 ## Architecture
 
@@ -219,7 +230,7 @@ FnUGreenLed/
 | Field | Value | Rationale |
 |-------|-------|-----------|
 | `appname` | FnUGreenLed | Unique app identifier |
-| `version` | 1.1.0 | Semantic versioning |
+| `version` | 1.2.0 | Semantic versioning |
 | `display_name` | 指示灯控制 | Chinese display name |
 | `service_port` | 19580 | HTTP server listening port |
 | `desktop_uidir` | ui | Standard UI directory |
@@ -234,6 +245,6 @@ FnUGreenLed/
 
 1. **Hardware truth is write-biased**: The app persists requested LED modes, but `ugreen_leds_cli` is still primarily a write tool; true hardware state can diverge if changed outside the app
 2. **Auto mode is heuristic**: Disk and network activity are inferred from Linux `/sys` counters
-3. **Model detection is not complete**: Current code detects available disk LEDs; full DMI/SMBIOS model matching remains roadmap work
+3. **Model detection coverage**: Now covers DXP2800, DXP4800, DXP4800 Plus, DXP6800, DXP8800, DX4600, DX4700. Additional UGREEN models require DMI profiling
 4. **No authentication**: API endpoint has no authentication beyond the fnOS desktop session
 5. **x86_64 only**: Compiled driver targets x86 architecture; ARM NAS models are not supported
