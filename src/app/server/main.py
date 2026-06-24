@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-FnUGreenLed v2.2 — LED Controller for UGREEN NAS
+FnUGreenLed v3.0 — LED Controller for UGREEN NAS
 - Three LED states: off / solid on / auto (responsive blink)
 - Disk I/O monitoring via /sys/block/*/stat
 - Network traffic monitoring via /sys/class/net/*/statistics
@@ -18,7 +18,7 @@ import glob
 import re
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
-VALID_MODES = ['off', 'on', 'auto']
+VALID_MODES = ['off', 'on', 'blink', 'auto']
 MAX_DISK_LEDS = 8
 LED_BASE = ['power', 'netdev']
 LED_STATUS_RE = re.compile(
@@ -223,31 +223,49 @@ def block_device_info(sdp):
     return {'dev': dev, 'ata': ata, 'hctl': hctl, 'serial': serial}
 
 def detect_disks():
-    """Map disk slots to /sys/block devices using the upstream ATA mapping strategy."""
+    """Map disk slots to /sys/block devices using lsblk (works on all models)."""
     disks = {}
-    infos = [block_device_info(p) for p in sorted(glob.glob('/sys/block/sd*'))]
-    by_ata = {info['ata']: info['dev'] for info in infos if info['ata']}
-    ata_map = cfg.get('ata_map') or model_info.get('ata_map') or [f'ata{i}' for i in range(1, MAX_DISK_LEDS + 1)]
-    for idx, ata in enumerate(ata_map, start=1):
-        dev = by_ata.get(ata)
-        if dev:
-            disks[idx] = dev
-
+    try:
+        ok, out, _ = run_cmd('lsblk', '-S', '-o', 'NAME,HCTL')
+        if ok:
+            for line in out.strip().split('\n'):
+                parts = line.strip().split()
+                if len(parts) >= 2 and parts[0].startswith('sd'):
+                    dev = parts[0]
+                    hctl = parts[1]
+                    try:
+                        slot = int(hctl.split(':')[0]) + 1
+                        if 1 <= slot <= 8:
+                            disks[slot] = dev
+                    except (ValueError, IndexError):
+                        pass
+    except Exception:
+        pass
     if not disks:
+        infos = [block_device_info(p) for p in sorted(glob.glob('/sys/block/sd*'))]
         for idx, info in enumerate(infos, start=1):
             disks[idx] = info['dev']
     return disks
 
 def detect_disk_presence(disk_map):
-    """Check which disk bays have a physical drive present by reading /sys/block/*/size."""
+    """Check disk presence: read /sys/block/<dev>/size and also try lsblk -n."""
     presence = {}
     for slot, dev in disk_map.items():
+        present = False
         try:
             with open(f'/sys/block/{dev}/size') as f:
-                size_val = int(f.read().strip())
-            presence[slot] = size_val > 0
+                present = int(f.read().strip()) > 0
         except (IOError, ValueError):
-            presence[slot] = False
+            pass
+        # Fallback: try lsblk
+        if not present:
+            try:
+                ok, out, _ = run_cmd('lsblk', '-ndo', 'SIZE', f'/dev/{dev}')
+                if ok and out.strip() and out.strip() != '0':
+                    present = True
+            except Exception:
+                pass
+        presence[slot] = present
     return presence
 
 def detect_net_iface():
@@ -352,6 +370,13 @@ class LEDController:
             ok, _, err = run(led, '-off')
         elif mode == 'on':
             ok, _, err = run(led, '-on')
+        elif mode == 'blink':
+            args = ['-blink', str(BLINK_ON_MS), str(BLINK_OFF_MS)]
+            if led in self._colors:
+                c = self._colors[led]; args += ['-color', str(c[0]), str(c[1]), str(c[2])]
+            if led in self._brightnesses:
+                args += ['-brightness', str(self._brightnesses[led])]
+            ok, _, err = run(led, *args)
         elif mode == 'auto':
             if activity:
                 args = ['-blink', str(BLINK_ON_MS), str(BLINK_OFF_MS)]
@@ -461,7 +486,7 @@ class LEDController:
 
 # ── init ──────────────────────────────────────────────────
 
-print(f'FnUGreenLed v2.2  port={PORT}  var={VAR}')
+print(f'FnUGreenLed v3.0  port={PORT}  var={VAR}')
 
 model_info = detect_model()
 led_statuses, probe_error = probe_leds()
@@ -522,7 +547,12 @@ def bay_html(i):
   <div class="bframe">
    <div class="bhdr"><span class="bnum">{i:02d}</span><div class="led sm" id="disk{i}-led"></div></div>
    <div class="bbody"><div class="dicon"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M2 12h20v6H2zm0-4h20v2H2zm2-6h16c1.1 0 2 .9 2 2v2H2V4c0-1.1.9-2 2-2z"/></svg></div></div>
-   <div class="bfooter"><div class="tgl3 sm3" data-led="disk{i}"><div class="trk3"><div class="thm3"></div></div><span class="tlbl3"></span></div></div>
+   <div class="bfooter"><div class="btnrow">
+    <button class="mbtn on" onclick="setLedMode('disk{i}','on')">●</button>
+    <button class="mbtn blink" onclick="setLedMode('disk{i}','blink')">✦</button>
+    <button class="mbtn auto" onclick="setLedMode('disk{i}','auto')">◉</button>
+    <button class="mbtn off" onclick="setLedMode('disk{i}','off')">○</button>
+   </div></div>
    <input type="color" class="colpick" data-led="disk{i}" value="#00ff88" title="颜色">
   </div>
  </div>'''
@@ -532,7 +562,7 @@ CSS = r'''
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;background:linear-gradient(135deg,#1a1a1a 0%,#0d0d0d 100%);min-height:100vh;display:flex;justify-content:center;align-items:center;padding:20px}
 .nc{width:100%;max-width:640px}
-.ncase{background:linear-gradient(145deg,var(--cb1) 0%,var(--cb2) 100%);border-radius:16px;border:2px solid var(--cbr);box-shadow:0 20px 60px rgba(0,0,0,0.6),inset 0 1px 0 rgba(255,255,255,0.08);overflow:hidden}
+.ncase{background:linear-gradient(145deg,var(--cb1) 0%,var(--cb2) 100%);border-radius:20px;border:2px solid var(--cbr);box-shadow:0 20px 60px rgba(0,0,0,0.6),inset 0 1px 0 rgba(255,255,255,0.08);overflow:hidden;backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px)}
 .hbar{display:flex;align-items:center;padding:20px 24px;background:linear-gradient(180deg,rgba(255,255,255,0.05) 0%,transparent 100%);border-bottom:1px solid rgba(0,0,0,0.3)}
 .hicon{width:32px;height:32px;color:var(--lon);filter:drop-shadow(0 0 4px rgba(0,255,136,0.5))}
 .htitle{flex:1;font-size:18px;font-weight:600;color:var(--t1);margin-left:12px;letter-spacing:0.5px}
@@ -599,6 +629,12 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica N
 .toast.show{transform:translateX(-50%) translateY(0);opacity:1}
 .toast.ok{border-left:3px solid var(--lon)}
 .toast.err{border-left:3px solid #ff4444}
+.btnrow{display:flex;gap:4px;flex-wrap:wrap;justify-content:center}
+.mbtn{width:28px;height:28px;border-radius:50%;border:1px solid rgba(255,255,255,0.1);background:#2a2a2a;color:#888;font-size:12px;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:all .2s}
+.mbtn:hover{background:#3a3a3a;transform:scale(1.1)}
+.mbtn.on.active{background:#00aa66;color:#fff;border-color:#00aa66}
+.mbtn.blink.active{background:#0066aa;color:#fff;border-color:#0066aa}
+.mbtn.auto.active{background:#8a3a00;color:#fff;border-color:#8a3a00}
 .init-panel{padding:28px 24px 24px;border-top:1px solid rgba(255,255,255,0.04)}
 .init-copy{color:var(--t2);font-size:13px;line-height:1.7;margin-bottom:20px}
 .init-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:18px}
@@ -613,22 +649,23 @@ JS = r'''
 (function(){
 var LEDS=__LEDS_JSON__;
 var modes=__INIT_MODES__;
-var MODE_LABEL=['关闭','常亮','自动'];
 function api(m,p,b){var o={method:m,headers:{'Content-Type':'application/json','X-Auth-Token':__AUTH_TOKEN__}};if(b)o.body=JSON.stringify(b);return fetch(p,o).then(function(r){return r.json()}).catch(function(e){return{success:false,message:e.message}})}
-function updateUI(led,mode,activity){modes[led]=mode;var el=document.getElementById(led+'-led');if(el){el.classList.remove('on','auto');if(mode==='on')el.classList.add('on')}
+function updateUI(led,mode,activity){modes[led]=mode;var el=document.getElementById(led+'-led');if(el){el.classList.remove('on','auto');if(mode==='on'||mode==='blink')el.classList.add('on')}
+var btns=document.querySelectorAll('.mbtn[onclick*="'+led+'"]');btns.forEach(function(b){b.classList.remove('active');if(b.classList.contains(mode))b.classList.add('active')})
 var tgl=document.querySelector('.tgl3[data-led="'+led+'"]');if(tgl){tgl.classList.remove('st0','st1','st2');var labels=['关闭','常亮','自动'];var states=['st0','st1','st2'];var idx=['off','on','auto'].indexOf(mode);if(idx>=0){tgl.classList.add(states[idx]);tgl.querySelector('.tlbl3').textContent=labels[idx]}}
 var bay=document.querySelector('.dbay[data-led="'+led+'"]');if(bay){bay.classList.toggle('active',mode!=='off')}
 var statusDot=document.getElementById('system-status');if(statusDot&&mode!=='off'){statusDot.style.animationName=(mode==='auto')?'autoPulse':'pulse'}}
 function toast(m,t){t=t||'ok';var e=document.getElementById('toast');e.textContent=m;e.className='toast show '+t;setTimeout(function(){e.classList.remove('show')},2500)}
 function lname(l){var m=l.match(/^disk(\d+)$/);if(m)return'磁盘'+m[1]+'灯';if(l==='power')return'电源灯';if(l==='netdev')return'网络灯';return l}
-function cycleMode(led){var order=['off','on','auto'];var idx=order.indexOf(modes[led]||'off');var next=order[(idx+1)%3];api('POST','/api/control',{led:led,action:next}).then(function(r){if(r.success){updateUI(led,next);toast(lname(led)+' → '+MODE_LABEL[(idx+1)%3])}else toast('操作失败: '+r.message,'err')})}
-function allMode(mode){var label=MODE_LABEL[['off','on','auto'].indexOf(mode)];toast('正在将所有指示灯设为: '+label);api('POST','/api/all/'+mode,{}).then(function(r){if(r.success){LEDS.forEach(function(led){updateUI(led,mode)});toast('所有指示灯已设为: '+label)}else toast('操作失败: '+r.message,'err')})}
+function setLedMode(led,mode){api('POST','/api/control',{led:led,action:mode}).then(function(r){if(r.success){updateUI(led,mode);var label={'off':'关闭','on':'常亮','blink':'闪烁','auto':'自动'}[mode];toast(lname(led)+' → '+label)}else toast('操作失败: '+r.message,'err')})}
+function cycleMode(led){var order=['off','on','blink','auto'];var idx=order.indexOf(modes[led]||'off');var next=order[(idx+1)%4];setLedMode(led,next)}
+function allMode(mode){var labels={'off':'关闭','on':'常亮','blink':'闪烁','auto':'自动'};var label=labels[mode]||mode;toast('正在将所有指示灯设为: '+label);api('POST','/api/all/'+mode,{}).then(function(r){if(r.success){LEDS.forEach(function(led){updateUI(led,mode)});toast('所有指示灯已设为: '+label)}else toast('操作失败: '+r.message,'err')})}
 function resetConfig(){if(!confirm('重置会清空本地配置和保存的指示灯模式，并返回初始化页面。继续吗？'))return;api('POST','/api/reset',{}).then(function(r){if(r.success){toast('配置已重置');setTimeout(function(){location.href='/'},500)}else toast('重置失败: '+r.message,'err')})}
 function pollStatus(){api('GET','/api/status').then(function(r){if(r.success&&r.activity){for(var led in r.activity){if(modes[led]==='auto'){var el=document.getElementById(led+'-led');if(el){el.classList.remove('auto');if(r.activity[led])el.classList.add('on');else el.classList.remove('on')}}}}})}
 function init(){
 document.querySelectorAll('.tgl3').forEach(function(t){t.addEventListener('click',function(e){e.preventDefault();e.stopPropagation();var l=t.dataset.led;if(l&&LEDS.indexOf(l)!==-1)cycleMode(l)})});
-document.querySelectorAll('.dbay').forEach(function(b){b.addEventListener('click',function(e){if(e.target.closest('.tgl3'))return;var l=b.dataset.led;if(l&&LEDS.indexOf(l)!==-1)cycleMode(l)})});
-document.querySelectorAll('.sitem').forEach(function(i){i.addEventListener('click',function(e){if(e.target.closest('.tgl3'))return;var l=i.dataset.led;if(l&&LEDS.indexOf(l)!==-1)cycleMode(l)})});
+document.querySelectorAll('.dbay').forEach(function(b){b.addEventListener('click',function(e){if(e.target.closest('.mbtn')||e.target.closest('.colpick'))return;var l=b.dataset.led;if(l&&LEDS.indexOf(l)!==-1)cycleMode(l)})});
+document.querySelectorAll('.sitem').forEach(function(i){i.addEventListener('click',function(e){if(e.target.closest('.tgl3')||e.target.closest('.colpick'))return;var l=i.dataset.led;if(l&&LEDS.indexOf(l)!==-1)cycleMode(l)})});
 document.getElementById('btn-all-on').addEventListener('click',function(){allMode('on')});
 document.getElementById('btn-all-off').addEventListener('click',function(){allMode('off')});
 var autoBtn=document.getElementById('btn-all-auto');if(autoBtn)autoBtn.addEventListener('click',function(){allMode('auto')});
@@ -786,18 +823,13 @@ def build_page():
         .replace('__AUTH_TOKEN__', json.dumps(auth_cfg.get('token', '')))
         .replace('__LEDS_JSON__', json.dumps(led_names))
         .replace('__INIT_MODES__', json.dumps(ctrl.modes)))
-    return HTML.format(
-        css=CSS,
-        js=js,
-        disk_count=disk_count,
-        disk_bays=bays
-    )
+    return HTML.replace('{css}', CSS).replace('{js}', js).replace('{disk_count}', str(disk_count)).replace('{disk_bays}', bays)
 
 def build_init_page():
     cfg_count = cfg.get('disk_count', 4)
     suggested = detected if detected in (2, 4, 6, 8) else (cfg_count if cfg_count in (2, 4, 6, 8) else 4)
     js = INIT_JS.replace('__AUTH_TOKEN__', json.dumps(auth_cfg.get('token', ''))).replace('__INIT_DISK_COUNT__', str(suggested))
-    return INIT_HTML.format(css=CSS, js=js, detected=detected or '未识别')
+    return INIT_HTML.replace('{css}', CSS).replace('{js}', js).replace('{detected}', str(detected or '未识别'))
 
 # ── HTTP handler ───────────────────────────────────────
 
@@ -850,7 +882,7 @@ class Handler(BaseHTTPRequestHandler):
             self._change_password(data)
         elif self.path == '/api/auth-status':
             self._json(200, {'authenticated': check_auth(self.headers)})
-        elif self.path in ('/api/all/off', '/api/all/on', '/api/all/auto'):
+        elif self.path in ('/api/all/off', '/api/all/on', '/api/all/blink', '/api/all/auto'):
             mode = self.path.rsplit('/', 1)[-1]
             self._all(mode)
         elif self.path == '/api/config':
@@ -873,7 +905,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(400, {'success': False, 'message': f'无效模式: {mode}'})
         ok, message = ctrl.set_mode(led, mode)
         if ok:
-            labels = {'off': '关闭', 'on': '常亮', 'auto': '自动'}
+            labels = {'off': '关闭', 'on': '常亮', 'blink': '闪烁', 'auto': '自动'}
             self._json(200, {'success': True, 'message': f'{led} → {labels[mode]}'})
         else:
             self._json(500, {'success': False, 'message': message or '设置失败'})
