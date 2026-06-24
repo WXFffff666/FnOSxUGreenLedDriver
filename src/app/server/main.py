@@ -459,56 +459,75 @@ class LEDController:
 
 # ── init ──────────────────────────────────────────────────
 
-print(f'FnUGreenLed v4.0  port={PORT}  var={VAR}')
+try:
+    print(f'FnUGreenLed v4.0  port={PORT}  var={VAR}')
 
-model_info = detect_model()
-led_statuses, probe_error = probe_leds()
-detected = disk_count_from_leds(led_statuses)
-hardware_modes = {led: data['mode'] for led, data in led_statuses.items()}
-print(f'Model: {model_info.get("product_name") or model_info.get("name")}')
-print(f'Probe: {detected} disk LEDs detected, leds={sorted(led_statuses.keys())}, error={probe_error or "none"}')
+    model_info = detect_model()
+    led_statuses, probe_error = probe_leds()
+    detected = disk_count_from_leds(led_statuses)
+    hardware_modes = {led: data['mode'] for led, data in led_statuses.items()}
+    print(f'Model: {model_info.get("product_name") or model_info.get("name")}')
+    print(f'Probe: {detected} disk LEDs detected, leds={sorted(led_statuses.keys())}, error={probe_error or "none"}')
 
-# Load or generate auth config
-auth_cfg = load_json(AUTH_FILE, {})
-AUTH_PASSWORD = auth_cfg.get('password', 'admin123')
-if 'password' not in auth_cfg:
-    auth_cfg['password'] = AUTH_PASSWORD
-    save_json(AUTH_FILE, auth_cfg)
-    print(f'Default admin password set: {AUTH_PASSWORD}')
+    # Load or generate auth config
+    auth_cfg = load_json(AUTH_FILE, {})
+    AUTH_PASSWORD = auth_cfg.get('password', 'admin123')
+    if 'password' not in auth_cfg:
+        auth_cfg['password'] = AUTH_PASSWORD
+        save_json(AUTH_FILE, auth_cfg)
+        print(f'Default admin password set: {AUTH_PASSWORD}')
 
-need_auth = True
+    need_auth = True
 
-initialized = os.path.exists(CONFIG_FILE)
-default_disk_count = detected or model_info.get('disk_count') or 4
-cfg = load_json(CONFIG_FILE, {
-    'disk_count': default_disk_count,
-    'model': model_info.get('id', 'auto'),
-    'model_name': model_info.get('name', 'Unknown'),
-    'product_name': model_info.get('product_name', ''),
-    'auto_detected': bool(detected or model_info.get('disk_count')),
-    'ata_map': model_info.get('ata_map', []),
-})
-if initialized and detected and not cfg.get('auto_detected'):
-    cfg['disk_count'] = detected
-    cfg['auto_detected'] = True
-    cfg['model'] = model_info.get('id', cfg.get('model', 'auto'))
-    cfg['model_name'] = model_info.get('name', cfg.get('model_name', 'Unknown'))
-    cfg['product_name'] = model_info.get('product_name', cfg.get('product_name', ''))
-    cfg['ata_map'] = model_info.get('ata_map', cfg.get('ata_map', []))
-    save_json(CONFIG_FILE, cfg)
+    initialized = os.path.exists(CONFIG_FILE)
+    default_disk_count = detected or model_info.get('disk_count') or 4
+    cfg = load_json(CONFIG_FILE, {
+        'disk_count': default_disk_count,
+        'model': model_info.get('id', 'auto'),
+        'model_name': model_info.get('name', 'Unknown'),
+        'product_name': model_info.get('product_name', ''),
+        'auto_detected': bool(detected or model_info.get('disk_count')),
+        'ata_map': model_info.get('ata_map', []),
+    })
+    if initialized and detected and not cfg.get('auto_detected'):
+        cfg['disk_count'] = detected
+        cfg['auto_detected'] = True
+        cfg['model'] = model_info.get('id', cfg.get('model', 'auto'))
+        cfg['model_name'] = model_info.get('name', cfg.get('model_name', 'Unknown'))
+        cfg['product_name'] = model_info.get('product_name', cfg.get('product_name', ''))
+        cfg['ata_map'] = model_info.get('ata_map', cfg.get('ata_map', []))
+        save_json(CONFIG_FILE, cfg)
 
-disk_count = cfg['disk_count']
-led_names = LED_BASE + [f'disk{i}' for i in range(1, disk_count + 1)]
-print(f'Active LEDs: {led_names}')
+    disk_count = cfg['disk_count']
+    led_names = LED_BASE + [f'disk{i}' for i in range(1, disk_count + 1)]
+    print(f'Active LEDs: {led_names}')
 
-ctrl = LEDController(led_names)
-saved_colors = load_json(STATE_COLORS_FILE, {})
-ctrl._colors = saved_colors.get('colors', {})
-ctrl._brightnesses = saved_colors.get('brightnesses', {})
-ctrl._disk_map = detect_disks()
-ctrl._disk_presence = detect_disk_presence(ctrl._disk_map)
-ctrl.restore_state(hardware_modes=hardware_modes, apply_hardware=True)
-ctrl.start_monitor()
+    ctrl = LEDController(led_names)
+    saved_colors = load_json(STATE_COLORS_FILE, {})
+    raw_colors = saved_colors.get('colors', {})
+    ctrl._colors = {}
+    for k, v in raw_colors.items():
+        if isinstance(v, (list, tuple)) and len(v) == 3:
+            try:
+                ctrl._colors[k] = [int(v[0]), int(v[1]), int(v[2])]
+            except (ValueError, TypeError):
+                pass
+    raw_bright = saved_colors.get('brightnesses', {})
+    ctrl._brightnesses = {}
+    for k, v in raw_bright.items():
+        try:
+            ctrl._brightnesses[k] = int(v)
+        except (ValueError, TypeError):
+            pass
+    ctrl._disk_map = detect_disks()
+    ctrl._disk_presence = detect_disk_presence(ctrl._disk_map)
+    ctrl.restore_state(hardware_modes=hardware_modes, apply_hardware=True)
+    ctrl.start_monitor()
+except Exception as e:
+    print(f'FATAL startup error: {e}')
+    import traceback
+    traceback.print_exc()
+    raise
 
 # ── HTML ──────────────────────────────────────────────────
 
