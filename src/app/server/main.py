@@ -619,6 +619,7 @@ document.getElementById('btn-all-on').addEventListener('click',function(){allMod
 document.getElementById('btn-all-off').addEventListener('click',function(){allMode('off')});
 var autoBtn=document.getElementById('btn-all-auto');if(autoBtn)autoBtn.addEventListener('click',function(){allMode('auto')});
 var resetBtn=document.getElementById('btn-reset');if(resetBtn)resetBtn.addEventListener('click',resetConfig);
+var chpwBtn=document.getElementById('btn-change-pw');if(chpwBtn)chpwBtn.addEventListener('click',function(){var oldPw=prompt('请输入旧密码:');if(!oldPw)return;var newPw=prompt('请输入新密码(至少3位):');if(!newPw||newPw.length<3){alert('新密码至少需要3位');return}api('POST','/api/change-password',{old_password:oldPw,new_password:newPw}).then(function(r){if(r.success){alert('密码修改成功！');location.href='/login'}else alert('修改失败: '+r.message)})});
 LEDS.forEach(function(led){updateUI(led,modes[led]||'off')});
 setInterval(pollStatus,800)
 }
@@ -684,9 +685,10 @@ HTML = r'''<!DOCTYPE html>
    <button class="abtn auto" id="btn-all-auto"><span class="bicon"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 6V3L8 7l4 4V8c2.21 0 4 1.79 4 4 0 .68-.17 1.32-.47 1.88l1.46 1.46C17.63 14.38 18 13.23 18 12c0-3.31-2.69-6-6-6zm-4 6c0-.68.17-1.32.47-1.88L7.01 8.66C6.37 9.62 6 10.77 6 12c0 3.31 2.69 6 6 6v3l4-4-4-4v3c-2.21 0-4-1.79-4-4z"/></svg></span>全部自动</button>
    <button class="abtn s" id="btn-all-off"><span class="bicon"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg></span>全部关闭</button>
   </div>
-  <div class="fbar">
-   <button class="abtn danger" id="btn-reset"><span class="bicon"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 5V2L7 7l5 5V9c2.76 0 5 2.24 5 5 0 1.04-.32 2-.86 2.8l1.46 1.46C18.48 17.08 19 15.6 19 14c0-3.87-3.13-7-7-7zm-5.6.74C5.52 6.92 5 8.4 5 10c0 3.87 3.13 7 7 7v3l5-5-5-5v3c-2.76 0-5-2.24-5-5 0-1.04.32-2 .86-2.8L6.4 5.74z"/></svg></span>重置配置</button>
-  </div>
+   <div class="fbar">
+    <button class="abtn" id="btn-change-pw" style="background:linear-gradient(180deg,#666 0%,#444 100%)"><span class="bicon"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm3.1-9H8.9V6c0-1.71 1.39-3.1 3.1-3.1s3.1 1.39 3.1 3.1v2z"/></svg></span>修改密码</button>
+    <button class="abtn danger" id="btn-reset"><span class="bicon"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 5V2L7 7l5 5V9c2.76 0 5 2.24 5 5 0 1.04-.32 2-.86 2.8l1.46 1.46C18.48 17.08 19 15.6 19 14c0-3.87-3.13-7-7-7zm-5.6.74C5.52 6.92 5 8.4 5 10c0 3.87 3.13 7 7 7v3l5-5-5-5v3c-2.76 0-5-2.24-5-5 0-1.04.32-2 .86-2.8L6.4 5.74z"/></svg></span>重置配置</button>
+   </div>
  </div>
 </div>
 <div class="toast" id="toast"></div>
@@ -820,6 +822,8 @@ class Handler(BaseHTTPRequestHandler):
             self._control(data)
         elif self.path == '/api/login':
             self._login(data)
+        elif self.path == '/api/change-password':
+            self._change_password(data)
         elif self.path == '/api/auth-status':
             self._json(200, {'authenticated': check_auth(self.headers)})
         elif self.path in ('/api/all/off', '/api/all/on', '/api/all/auto'):
@@ -937,6 +941,17 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(json.dumps({'success': True}, ensure_ascii=False).encode('utf-8'))
         else:
             self._json(401, {'success': False, 'message': '密码错误'})
+
+    def _change_password(self, data):
+        old_pw = data.get('old_password', '')
+        new_pw = data.get('new_password', '')
+        if old_pw != auth_cfg.get('password', ''):
+            return self._json(400, {'success': False, 'message': '旧密码错误'})
+        if not new_pw or len(new_pw) < 3:
+            return self._json(400, {'success': False, 'message': '新密码至少3位'})
+        auth_cfg['password'] = new_pw
+        save_json(AUTH_FILE, auth_cfg)
+        self._json(200, {'success': True, 'message': '密码已修改'})
 
     def _color(self, data):
         led = data.get('led', '')
