@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-FnUGreenLed v1.3 — LED Controller for UGREEN NAS
+FnUGreenLed v2.0 — LED Controller for UGREEN NAS
 - Three LED states: off / solid on / auto (responsive blink)
 - Disk I/O monitoring via /sys/block/*/stat
 - Network traffic monitoring via /sys/class/net/*/statistics
@@ -420,7 +420,7 @@ class LEDController:
 
 # ── init ──────────────────────────────────────────────────
 
-print(f'FnUGreenLed v1.3  port={PORT}  var={VAR}')
+print(f'FnUGreenLed v2.0  port={PORT}  var={VAR}')
 
 model_info = detect_model()
 led_statuses, probe_error = probe_leds()
@@ -564,7 +564,7 @@ JS = r'''
 var LEDS=__LEDS_JSON__;
 var modes=__INIT_MODES__;
 var MODE_LABEL=['关闭','常亮','自动'];
-function api(m,p,b){var o={method:m,headers:{'Content-Type':'application/json'}};if(b)o.body=JSON.stringify(b);return fetch(p,o).then(function(r){return r.json()}).catch(function(e){return{success:false,message:e.message}})}
+function api(m,p,b){var o={method:m,headers:{'Content-Type':'application/json','X-Auth-Token':__AUTH_TOKEN__}};if(b)o.body=JSON.stringify(b);return fetch(p,o).then(function(r){return r.json()}).catch(function(e){return{success:false,message:e.message}})}
 function updateUI(led,mode,activity){modes[led]=mode;var el=document.getElementById(led+'-led');if(el){el.classList.remove('on','auto');if(mode==='on')el.classList.add('on')}
 var tgl=document.querySelector('.tgl3[data-led="'+led+'"]');if(tgl){tgl.classList.remove('st0','st1','st2');var labels=['关闭','常亮','自动'];var states=['st0','st1','st2'];var idx=['off','on','auto'].indexOf(mode);if(idx>=0){tgl.classList.add(states[idx]);tgl.querySelector('.tlbl3').textContent=labels[idx]}}
 var bay=document.querySelector('.dbay[data-led="'+led+'"]');if(bay){bay.classList.toggle('active',mode!=='off')}
@@ -593,7 +593,7 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
 INIT_JS = r'''
 (function(){
 var selected=__INIT_DISK_COUNT__;
-function api(m,p,b){var o={method:m,headers:{'Content-Type':'application/json'}};if(b)o.body=JSON.stringify(b);return fetch(p,o).then(function(r){return r.json()}).catch(function(e){return{success:false,message:e.message}})}
+function api(m,p,b){var o={method:m,headers:{'Content-Type':'application/json','X-Auth-Token':__AUTH_TOKEN__}};if(b)o.body=JSON.stringify(b);return fetch(p,o).then(function(r){return r.json()}).catch(function(e){return{success:false,message:e.message}})}
 function mark(){document.querySelectorAll('.choice').forEach(function(btn){btn.classList.toggle('active',parseInt(btn.dataset.count,10)===selected)})}
 function toast(m,t){t=t||'ok';var e=document.getElementById('toast');e.textContent=m;e.className='toast show '+t;setTimeout(function(){e.classList.remove('show')},2500)}
 function save(){api('POST','/api/config',{disk_count:selected,model:'manual'}).then(function(r){if(r.success){location.href='/'}else toast('初始化失败: '+r.message,'err')})}
@@ -697,6 +697,7 @@ INIT_HTML = r'''<!DOCTYPE html>
 def build_page():
     bays = '\n'.join(bay_html(i) for i in range(1, disk_count + 1))
     js = (JS
+        .replace('__AUTH_TOKEN__', json.dumps(auth_cfg.get('token', '')))
         .replace('__LEDS_JSON__', json.dumps(led_names))
         .replace('__INIT_MODES__', json.dumps(ctrl.modes)))
     return HTML.format(
@@ -709,7 +710,7 @@ def build_page():
 def build_init_page():
     cfg_count = cfg.get('disk_count', 4)
     suggested = detected if detected in (2, 4, 6, 8) else (cfg_count if cfg_count in (2, 4, 6, 8) else 4)
-    js = INIT_JS.replace('__INIT_DISK_COUNT__', str(suggested))
+    js = INIT_JS.replace('__AUTH_TOKEN__', json.dumps(auth_cfg.get('token', ''))).replace('__INIT_DISK_COUNT__', str(suggested))
     return INIT_HTML.format(css=CSS, js=js, detected=detected or '未识别')
 
 # ── HTTP handler ───────────────────────────────────────
@@ -755,6 +756,10 @@ class Handler(BaseHTTPRequestHandler):
             self._all(mode)
         elif self.path == '/api/config':
             self._set_config(data)
+        elif self.path == '/api/color':
+            self._color(data)
+        elif self.path == '/api/brightness':
+            self._brightness(data)
         elif self.path == '/api/reset':
             self._reset_config()
         else:
@@ -801,6 +806,8 @@ class Handler(BaseHTTPRequestHandler):
             led_names = LED_BASE + [f'disk{i}' for i in range(1, disk_count + 1)]
             ctrl.stop_monitor()
             ctrl = LEDController(led_names)
+            ctrl._disk_map = detect_disks()
+            ctrl._disk_presence = detect_disk_presence(ctrl._disk_map)
             ctrl.restore_state(hardware_modes=hardware_modes)
             ctrl.start_monitor()
             self._json(200, {'success': True, 'message': f'已切换到 {disk_count} 盘位', 'disk_count': disk_count, 'leds': led_names})
@@ -834,9 +841,35 @@ class Handler(BaseHTTPRequestHandler):
         led_names = LED_BASE + [f'disk{i}' for i in range(1, disk_count + 1)]
         ctrl.stop_monitor()
         ctrl = LEDController(led_names)
+        ctrl._disk_map = detect_disks()
+        ctrl._disk_presence = detect_disk_presence(ctrl._disk_map)
         ctrl.restore_state(hardware_modes=hardware_modes, apply_hardware=False)
         ctrl.start_monitor()
         self._json(200, {'success': True, 'message': '配置已重置', 'initialized': initialized})
+
+    def _color(self, data):
+        led = data.get('led', '')
+        r = data.get('r', 0)
+        g = data.get('g', 0)
+        b = data.get('b', 0)
+        if led not in led_names:
+            return self._json(400, {'success': False, 'message': f'无效指示灯: {led}'})
+        ok, _, err = run(led, '-color', str(r), str(g), str(b))
+        if ok:
+            self._json(200, {'success': True, 'message': f'{led} color set to RGB({r},{g},{b})'})
+        else:
+            self._json(500, {'success': False, 'message': err or '设置颜色失败'})
+
+    def _brightness(self, data):
+        led = data.get('led', '')
+        brightness = data.get('brightness', 0)
+        if led not in led_names:
+            return self._json(400, {'success': False, 'message': f'无效指示灯: {led}'})
+        ok, _, err = run(led, '-brightness', str(brightness))
+        if ok:
+            self._json(200, {'success': True, 'message': f'{led} brightness set to {brightness}'})
+        else:
+            self._json(500, {'success': False, 'message': err or '设置亮度失败'})
 
     def _body(self):
         length = int(self.headers.get('Content-Length', 0))
