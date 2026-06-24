@@ -1,5 +1,27 @@
 #!/bin/bash
+# LED Controller — Pre-uninstall cleanup
+# Restore all LEDs to off state before app removal.
+# The LED controller (address 0x3a) retains its last-set state
+# even after the driver/app is removed. Without this cleanup,
+# LEDs would remain in whatever pattern was active.
+#
+# Reference: miskcoo/ugreen_leds_controller — the i2c registers
+# persist across reboots/driver unloads.
 
-### This script is called after the user uninstalls the application.
+CLI="/usr/local/bin/ugreen_leds_cli"
+BUNDLED="${TRIM_APPDEST}/server/ugreen_leds_cli"
 
+echo "=== FnUGreenLed Uninstall Cleanup ==="
+
+for CLI_PATH in "$CLI" "$BUNDLED"; do
+    if [ -f "$CLI_PATH" ] && [ -x "$CLI_PATH" ]; then
+        echo "[1/2] Turning off all LEDs via $CLI_PATH..."
+        "$CLI_PATH" all -off 2>/dev/null && \
+            echo "  All LEDs turned off." || \
+            echo "  WARNING: Could not turn off LEDs (I2C may be unavailable)."
+        break
+    fi
+done
+
+echo "[2/2] Cleanup complete."
 exit 0

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-FnUGreenLed v1.1 — LED Controller for UGREEN NAS
+FnUGreenLed v1.3 — LED Controller for UGREEN NAS
 - Three LED states: off / solid on / auto (responsive blink)
 - Disk I/O monitoring via /sys/block/*/stat
 - Network traffic monitoring via /sys/class/net/*/statistics
@@ -8,6 +8,7 @@ FnUGreenLed v1.1 — LED Controller for UGREEN NAS
 """
 
 import os
+import secrets
 import json
 import subprocess
 import threading
@@ -53,6 +54,8 @@ BLINK_ON_MS = 80
 BLINK_OFF_MS = 120
 MONITOR_INTERVAL = 0.5  # seconds
 
+AUTH_FILE = os.path.join(VAR, 'auth_token.json')
+
 # ── helpers ──────────────────────────────────────────────
 
 def run(*args):
@@ -96,6 +99,10 @@ def remove_file(path):
     except IOError as e:
         return str(e)
     return None
+
+def check_auth(headers):
+    token = headers.get('X-Auth-Token', '')
+    return token == auth_cfg.get('token', '')
 
 # ── hardware probe ───────────────────────────────────────
 
@@ -217,6 +224,18 @@ def detect_disks():
             disks[idx] = info['dev']
     return disks
 
+def detect_disk_presence(disk_map):
+    """Check which disk bays have a physical drive present by reading /sys/block/*/size."""
+    presence = {}
+    for slot, dev in disk_map.items():
+        try:
+            with open(f'/sys/block/{dev}/size') as f:
+                size_val = int(f.read().strip())
+            presence[slot] = size_val > 0
+        except (IOError, ValueError):
+            presence[slot] = False
+    return presence
+
 def detect_net_iface():
     """Find the primary active network interface with carrier."""
     net_dir = '/sys/class/net'
@@ -263,6 +282,7 @@ class LEDController:
         self._prev_net_rx = 0
         self._prev_net_tx = 0
         self._prev_disk_io = {}
+        self._disk_presence = {}
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._thread = None
@@ -274,6 +294,11 @@ class LEDController:
             mode = hardware_modes.get(led, saved.get(led, 'off'))
             if mode not in VALID_MODES:
                 mode = 'off'
+            # Force empty disk bays to 'off'
+            if led.startswith('disk'):
+                m = re.match(r'disk(\d+)', led)
+                if m and not self._disk_presence.get(int(m.group(1)), False):
+                    mode = 'off'
             self.modes[led] = mode
             self.activity[led] = False
             if apply_hardware and led not in hardware_modes:
@@ -296,6 +321,10 @@ class LEDController:
 
     def _apply(self, led, mode, activity=False):
         """Set hardware LED state based on mode and activity."""
+        if led.startswith('disk'):
+            m = re.match(r'disk(\d+)', led)
+            if m and not self._disk_presence.get(int(m.group(1)), False):
+                return True, 'OK'
         if mode == 'off':
             ok, _, err = run(led, '-off')
         elif mode == 'on':
@@ -316,8 +345,10 @@ class LEDController:
 
     def start_monitor(self):
         self._disk_map = detect_disks()
+        self._disk_presence = detect_disk_presence(self._disk_map)
         self._net_iface = detect_net_iface()
         print(f'Disks: {self._disk_map}')
+        print(f'Disk presence: {self._disk_presence}')
         print(f'Network: {self._net_iface or "none"}')
 
         # Init previous counters
@@ -359,6 +390,8 @@ class LEDController:
     def _check_disks(self):
         for slot, dev in list(self._disk_map.items()):
             led = f'disk{slot}'
+            if not self._disk_presence.get(slot, False):
+                continue
             if self.modes.get(led) != 'auto' or led not in self.leds:
                 continue
             try:
@@ -379,6 +412,7 @@ class LEDController:
             'modes': dict(self.modes),
             'activity': dict(self.activity),
             'disk_map': {str(k): v for k, v in self._disk_map.items()},
+            'disk_presence': {str(k): v for k, v in self._disk_presence.items()},
             'net_iface': self._net_iface,
             'leds': self.leds,
         }
@@ -386,7 +420,7 @@ class LEDController:
 
 # ── init ──────────────────────────────────────────────────
 
-print(f'FnUGreenLed v1.1  port={PORT}  var={VAR}')
+print(f'FnUGreenLed v1.3  port={PORT}  var={VAR}')
 
 model_info = detect_model()
 led_statuses, probe_error = probe_leds()
@@ -394,6 +428,17 @@ detected = disk_count_from_leds(led_statuses)
 hardware_modes = {led: data['mode'] for led, data in led_statuses.items()}
 print(f'Model: {model_info.get("product_name") or model_info.get("name")}')
 print(f'Probe: {detected} disk LEDs detected, leds={sorted(led_statuses.keys())}, error={probe_error or "none"}')
+
+# Load or generate auth token
+auth_cfg = load_json(AUTH_FILE, {})
+if not auth_cfg.get('token'):
+    token = secrets.token_hex(16)
+    auth_cfg = {'token': token, 'note': 'Include this in X-Auth-Token header for LED control'}
+    save_json(AUTH_FILE, auth_cfg)
+    print(f'Auth token: {token}')
+else:
+    print(f'Auth token: {auth_cfg["token"]}')
+need_auth = bool(auth_cfg.get('token'))
 
 initialized = os.path.exists(CONFIG_FILE)
 default_disk_count = detected or model_info.get('disk_count') or 4
@@ -419,6 +464,8 @@ led_names = LED_BASE + [f'disk{i}' for i in range(1, disk_count + 1)]
 print(f'Active LEDs: {led_names}')
 
 ctrl = LEDController(led_names)
+ctrl._disk_map = detect_disks()
+ctrl._disk_presence = detect_disk_presence(ctrl._disk_map)
 ctrl.restore_state(hardware_modes=hardware_modes, apply_hardware=initialized)
 ctrl.start_monitor()
 
@@ -693,6 +740,8 @@ class Handler(BaseHTTPRequestHandler):
             self._json(404, {})
 
     def do_POST(self):
+        if need_auth and not check_auth(self.headers):
+            return self._json(401, {'success': False, 'message': 'Unauthorized'})
         body = self._body()
         try:
             data = json.loads(body) if body else {}
