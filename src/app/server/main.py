@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-FnUGreenLed v5.0 — LED Controller for UGREEN NAS
+FnUGreenLed v5.1 — LED Controller for UGREEN NAS
 - Three LED states: off / solid on / auto (responsive blink)
 - Disk I/O monitoring via /sys/block/*/stat
 - Network traffic monitoring via /sys/class/net/*/statistics
@@ -8,15 +8,15 @@ FnUGreenLed v5.0 — LED Controller for UGREEN NAS
 """
 
 import os
-import secrets
 import json
-import base64
 import subprocess
 import threading
 import time
 import glob
 import re
 from http.server import HTTPServer, BaseHTTPRequestHandler
+import secrets
+import base64
 
 VALID_MODES = ['off', 'on', 'auto']
 MAX_DISK_LEDS = 8
@@ -49,14 +49,12 @@ CLI = _BUNDLED if os.path.exists(_BUNDLED) else '/usr/local/bin/ugreen_leds_cli'
 PORT = int(os.environ.get('TRIM_SERVICE_PORT', 19580))
 VAR = os.environ.get('TRIM_PKGVAR', '/tmp')
 STATE_FILE = os.path.join(VAR, 'led_state.json')
-STATE_COLORS_FILE = os.path.join(VAR, 'led_colors.json')
 CONFIG_FILE = os.path.join(VAR, 'device_config.json')
+AUTH_FILE = os.path.join(VAR, 'auth.json')
 
 BLINK_ON_MS = 80
 BLINK_OFF_MS = 120
 MONITOR_INTERVAL = 0.5  # seconds
-
-AUTH_FILE = os.path.join(VAR, 'auth_token.json')
 
 # ── helpers ──────────────────────────────────────────────
 
@@ -102,8 +100,8 @@ def remove_file(path):
         return str(e)
     return None
 
+
 def check_auth(headers):
-    """Check session cookie only — no token fallback."""
     cookie_header = headers.get('Cookie', '')
     cookies = {}
     for item in cookie_header.split(';'):
@@ -218,50 +216,20 @@ def block_device_info(sdp):
     return {'dev': dev, 'ata': ata, 'hctl': hctl, 'serial': serial}
 
 def detect_disks():
-    """Map disk slots to /sys/block devices using lsblk (works on all models)."""
+    """Map disk slots to /sys/block devices using the upstream ATA mapping strategy."""
     disks = {}
-    try:
-        ok, out, _ = run_cmd('lsblk', '-S', '-o', 'NAME,HCTL')
-        if ok:
-            for line in out.strip().split('\n'):
-                parts = line.strip().split()
-                if len(parts) >= 2 and parts[0].startswith('sd'):
-                    dev = parts[0]
-                    hctl = parts[1]
-                    try:
-                        slot = int(hctl.split(':')[0]) + 1
-                        if 1 <= slot <= 8:
-                            disks[slot] = dev
-                    except (ValueError, IndexError):
-                        pass
-            except Exception as e:
-                print(f'Monitor error: {e}')
+    infos = [block_device_info(p) for p in sorted(glob.glob('/sys/block/sd*'))]
+    by_ata = {info['ata']: info['dev'] for info in infos if info['ata']}
+    ata_map = cfg.get('ata_map') or model_info.get('ata_map') or [f'ata{i}' for i in range(1, MAX_DISK_LEDS + 1)]
+    for idx, ata in enumerate(ata_map, start=1):
+        dev = by_ata.get(ata)
+        if dev:
+            disks[idx] = dev
+
     if not disks:
-        infos = [block_device_info(p) for p in sorted(glob.glob('/sys/block/sd*'))]
         for idx, info in enumerate(infos, start=1):
             disks[idx] = info['dev']
     return disks
-
-def detect_disk_presence(disk_map):
-    """Check disk presence: read /sys/block/<dev>/size and also try lsblk -n."""
-    presence = {}
-    for slot, dev in disk_map.items():
-        present = False
-        try:
-            with open(f'/sys/block/{dev}/size') as f:
-                present = int(f.read().strip()) > 0
-        except (IOError, ValueError):
-            pass
-        # Fallback: try lsblk
-        if not present:
-            try:
-                ok, out, _ = run_cmd('lsblk', '-ndo', 'SIZE', f'/dev/{dev}')
-                if ok and out.strip() and out.strip() != '0':
-                    present = True
-            except Exception:
-                pass
-        presence[slot] = present
-    return presence
 
 def detect_net_iface():
     """Find the primary active network interface with carrier."""
@@ -303,15 +271,12 @@ class LEDController:
     def __init__(self, led_names):
         self.leds = led_names
         self.modes = {}     # led -> 'off'|'on'|'auto'
-        self._colors = {}
-        self._brightnesses = {}
         self.activity = {}  # led -> bool (is currently blinking)
         self._disk_map = {}
         self._net_iface = None
         self._prev_net_rx = 0
         self._prev_net_tx = 0
         self._prev_disk_io = {}
-        self._disk_presence = {}
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._thread = None
@@ -351,12 +316,7 @@ class LEDController:
             ok, _, err = run(led, '-on')
         elif mode == 'auto':
             if activity:
-                args = ['-on']
-                if led in self._colors:
-                    c = self._colors[led]; args += ['-color', str(c[0]), str(c[1]), str(c[2])]
-                if led in self._brightnesses:
-                    args += ['-brightness', str(self._brightnesses[led])]
-                ok, _, err = run(led, *args)
+                ok, _, err = run(led, '-blink', str(BLINK_ON_MS), str(BLINK_OFF_MS))
             else:
                 ok, _, err = run(led, '-off')
         else:
@@ -370,10 +330,8 @@ class LEDController:
 
     def start_monitor(self):
         self._disk_map = detect_disks()
-        self._disk_presence = detect_disk_presence(self._disk_map)
         self._net_iface = detect_net_iface()
         print(f'Disks: {self._disk_map}')
-        print(f'Disk presence: {self._disk_presence}')
         print(f'Network: {self._net_iface or "none"}')
 
         # Init previous counters
@@ -391,19 +349,12 @@ class LEDController:
         self._stop.set()
 
     def _monitor_loop(self):
-        tick = 0
         while not self._stop.wait(MONITOR_INTERVAL):
             try:
-                tick += 1
-                if tick % 60 == 0:
-                    new_map = detect_disks()
-                    if new_map != self._disk_map:
-                        self._disk_map = new_map
-                        self._disk_presence = detect_disk_presence(new_map)
                 self._check_network()
                 self._check_disks()
-            except Exception as e:
-                print(f'Monitor error: {e}')
+            except Exception:
+                pass
 
     def _check_network(self):
         led = 'netdev'
@@ -422,8 +373,6 @@ class LEDController:
     def _check_disks(self):
         for slot, dev in list(self._disk_map.items()):
             led = f'disk{slot}'
-            if not self._disk_presence.get(slot, False):
-                continue
             if self.modes.get(led) != 'auto' or led not in self.leds:
                 continue
             try:
@@ -444,7 +393,6 @@ class LEDController:
             'modes': dict(self.modes),
             'activity': dict(self.activity),
             'disk_map': {str(k): v for k, v in self._disk_map.items()},
-            'disk_presence': {str(k): v for k, v in self._disk_presence.items()},
             'net_iface': self._net_iface,
             'leds': self.leds,
         }
@@ -452,75 +400,49 @@ class LEDController:
 
 # ── init ──────────────────────────────────────────────────
 
-try:
-    print(f'FnUGreenLed v5.0  port={PORT}  var={VAR}')
+print(f'FnUGreenLed v5.1  port={PORT}  var={VAR}')
 
-    model_info = detect_model()
-    led_statuses, probe_error = probe_leds()
-    detected = disk_count_from_leds(led_statuses)
-    hardware_modes = {led: data['mode'] for led, data in led_statuses.items()}
-    print(f'Model: {model_info.get("product_name") or model_info.get("name")}')
-    print(f'Probe: {detected} disk LEDs detected, leds={sorted(led_statuses.keys())}, error={probe_error or "none"}')
+auth_cfg = load_json(AUTH_FILE, {})
+if 'password' not in auth_cfg:
+    auth_cfg['password'] = 'admin123'
+    save_json(AUTH_FILE, auth_cfg)
+need_auth = True
+auth_cfg['session'] = ''
+save_json(AUTH_FILE, auth_cfg)
 
-    # Load or generate auth config
-    auth_cfg = load_json(AUTH_FILE, {})
-    AUTH_PASSWORD = auth_cfg.get('password', 'admin123')
-    if 'password' not in auth_cfg:
-        auth_cfg['password'] = AUTH_PASSWORD
-        save_json(AUTH_FILE, auth_cfg)
-        print(f'Default admin password set: {AUTH_PASSWORD}')
+model_info = detect_model()
+led_statuses, probe_error = probe_leds()
+detected = disk_count_from_leds(led_statuses)
+hardware_modes = {led: data['mode'] for led, data in led_statuses.items()}
+print(f'Model: {model_info.get("product_name") or model_info.get("name")}')
+print(f'Probe: {detected} disk LEDs detected, leds={sorted(led_statuses.keys())}, error={probe_error or "none"}')
 
-    need_auth = True
+initialized = os.path.exists(CONFIG_FILE)
+default_disk_count = detected or model_info.get('disk_count') or 4
+cfg = load_json(CONFIG_FILE, {
+    'disk_count': default_disk_count,
+    'model': model_info.get('id', 'auto'),
+    'model_name': model_info.get('name', 'Unknown'),
+    'product_name': model_info.get('product_name', ''),
+    'auto_detected': bool(detected or model_info.get('disk_count')),
+    'ata_map': model_info.get('ata_map', []),
+})
+if initialized and detected and not cfg.get('auto_detected'):
+    cfg['disk_count'] = detected
+    cfg['auto_detected'] = True
+    cfg['model'] = model_info.get('id', cfg.get('model', 'auto'))
+    cfg['model_name'] = model_info.get('name', cfg.get('model_name', 'Unknown'))
+    cfg['product_name'] = model_info.get('product_name', cfg.get('product_name', ''))
+    cfg['ata_map'] = model_info.get('ata_map', cfg.get('ata_map', []))
+    save_json(CONFIG_FILE, cfg)
 
-    initialized = os.path.exists(CONFIG_FILE)
-    default_disk_count = detected or model_info.get('disk_count') or 4
-    cfg = load_json(CONFIG_FILE, {
-        'disk_count': default_disk_count,
-        'model': model_info.get('id', 'auto'),
-        'model_name': model_info.get('name', 'Unknown'),
-        'product_name': model_info.get('product_name', ''),
-        'auto_detected': bool(detected or model_info.get('disk_count')),
-        'ata_map': model_info.get('ata_map', []),
-    })
-    if initialized and detected and not cfg.get('auto_detected'):
-        cfg['disk_count'] = detected
-        cfg['auto_detected'] = True
-        cfg['model'] = model_info.get('id', cfg.get('model', 'auto'))
-        cfg['model_name'] = model_info.get('name', cfg.get('model_name', 'Unknown'))
-        cfg['product_name'] = model_info.get('product_name', cfg.get('product_name', ''))
-        cfg['ata_map'] = model_info.get('ata_map', cfg.get('ata_map', []))
-        save_json(CONFIG_FILE, cfg)
+disk_count = cfg['disk_count']
+led_names = LED_BASE + [f'disk{i}' for i in range(1, disk_count + 1)]
+print(f'Active LEDs: {led_names}')
 
-    disk_count = cfg['disk_count']
-    led_names = LED_BASE + [f'disk{i}' for i in range(1, disk_count + 1)]
-    print(f'Active LEDs: {led_names}')
-
-    ctrl = LEDController(led_names)
-    saved_colors = load_json(STATE_COLORS_FILE, {})
-    raw_colors = saved_colors.get('colors', {})
-    ctrl._colors = {}
-    for k, v in raw_colors.items():
-        if isinstance(v, (list, tuple)) and len(v) == 3:
-            try:
-                ctrl._colors[k] = [int(v[0]), int(v[1]), int(v[2])]
-            except (ValueError, TypeError):
-                pass
-    raw_bright = saved_colors.get('brightnesses', {})
-    ctrl._brightnesses = {}
-    for k, v in raw_bright.items():
-        try:
-            ctrl._brightnesses[k] = int(v)
-        except (ValueError, TypeError):
-            pass
-    ctrl._disk_map = detect_disks()
-    ctrl._disk_presence = detect_disk_presence(ctrl._disk_map)
-    ctrl.restore_state(hardware_modes=hardware_modes, apply_hardware=True)
-    ctrl.start_monitor()
-except Exception as e:
-    print(f'FATAL startup error: {e}')
-    import traceback
-    traceback.print_exc()
-    raise
+ctrl = LEDController(led_names)
+ctrl.restore_state(hardware_modes=hardware_modes, apply_hardware=initialized)
+ctrl.start_monitor()
 
 # ── HTML ──────────────────────────────────────────────────
 
@@ -529,30 +451,18 @@ def bay_html(i):
   <div class="bframe">
    <div class="bhdr"><span class="bnum">{i:02d}</span><div class="led sm" id="disk{i}-led"></div></div>
    <div class="bbody"><div class="dicon"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M2 12h20v6H2zm0-4h20v2H2zm2-6h16c1.1 0 2 .9 2 2v2H2V4c0-1.1.9-2 2-2z"/></svg></div></div>
-   <div class="bfooter"><div class="btnrow">
-    <button class="mbtn on" onclick="setLedMode('disk{i}','on')">●</button>
-    <button class="mbtn auto" onclick="setLedMode('disk{i}','auto')">◉</button>
-    <button class="mbtn off" onclick="setLedMode('disk{i}','off')">○</button>
-   </div></div>
-   <div class="presets">
-    <span class="preset" style="background:#ffffff" onclick="setColor('disk{i}','#ffffff')"></span>
-    <span class="preset" style="background:#ff4444" onclick="setColor('disk{i}','#ff4444')"></span>
-    <span class="preset" style="background:#44ff44" onclick="setColor('disk{i}','#44ff44')"></span>
-    <span class="preset" style="background:#4488ff" onclick="setColor('disk{i}','#4488ff')"></span>
-    <span class="preset" style="background:#ffaa00" onclick="setColor('disk{i}','#ffaa00')"></span>
-   </div>
-   <input type="color" class="colpick" data-led="disk{i}" value="#ffffff" title="颜色">
+   <div class="bfooter"><div class="tgl3 sm3" data-led="disk{i}"><div class="trk3"><div class="thm3"></div></div><span class="tlbl3"></span></div></div>
   </div>
  </div>'''
 
 CSS = r'''
-:root{--cb1:#3d3d3d;--cb2:#2a2a2a;--cbr:#1a1a1a;--bb1:#353535;--bb2:#252525;--bbr:#1f1f1f;--bis:inset 0 2px 8px rgba(0,0,0,0.5);--lon:#ffffff;--log:0 0 8px #ffffff,0 0 16px #ffffff,0 0 24px rgba(255,255,255,0.5);--loff:#333;--los:inset 0 1px 2px rgba(0,0,0,0.8);--sto:linear-gradient(180deg,#444 0%,#222 100%);--stn:linear-gradient(180deg,#00aa66 0%,#006633 100%);--sth:linear-gradient(180deg,#666 0%,#444 100%);--sthn:linear-gradient(180deg,#00cc66 0%,#009944 100%);--bp:linear-gradient(180deg,#00aa66 0%,#008844 100%);--bs:linear-gradient(180deg,#555 0%,#333 100%);--t1:#e0e0e0;--t2:#888;--t3:#666}
+:root{--cb1:#3d3d3d;--cb2:#2a2a2a;--cbr:#1a1a1a;--bb1:#353535;--bb2:#252525;--bbr:#1f1f1f;--bis:inset 0 2px 8px rgba(0,0,0,0.5);--lon:#00ff88;--log:0 0 8px #00ff88,0 0 16px #00ff88,0 0 24px rgba(0,255,136,0.5);--loff:#333;--los:inset 0 1px 2px rgba(0,0,0,0.8);--sto:linear-gradient(180deg,#444 0%,#222 100%);--stn:linear-gradient(180deg,#00aa66 0%,#006633 100%);--sth:linear-gradient(180deg,#666 0%,#444 100%);--sthn:linear-gradient(180deg,#00cc66 0%,#009944 100%);--bp:linear-gradient(180deg,#00aa66 0%,#008844 100%);--bs:linear-gradient(180deg,#555 0%,#333 100%);--t1:#e0e0e0;--t2:#888;--t3:#666}
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;background:linear-gradient(135deg,#1a1a1a 0%,#0d0d0d 100%);min-height:100vh;display:flex;justify-content:center;align-items:center;padding:20px}
 .nc{width:100%;max-width:640px}
-.ncase{background:linear-gradient(145deg,var(--cb1) 0%,var(--cb2) 100%);border-radius:20px;border:2px solid var(--cbr);box-shadow:0 20px 60px rgba(0,0,0,0.6),inset 0 1px 0 rgba(255,255,255,0.08);overflow:hidden;backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px)}
+.ncase{background:linear-gradient(145deg,var(--cb1) 0%,var(--cb2) 100%);border-radius:16px;border:2px solid var(--cbr);box-shadow:0 20px 60px rgba(0,0,0,0.6),inset 0 1px 0 rgba(255,255,255,0.08);overflow:hidden}
 .hbar{display:flex;align-items:center;padding:20px 24px;background:linear-gradient(180deg,rgba(255,255,255,0.05) 0%,transparent 100%);border-bottom:1px solid rgba(0,0,0,0.3)}
-.hicon{width:32px;height:32px;color:var(--lon);filter:drop-shadow(0 0 4px rgba(255,255,255,0.5))}
+.hicon{width:32px;height:32px;color:var(--lon);filter:drop-shadow(0 0 4px rgba(0,255,136,0.5))}
 .htitle{flex:1;font-size:18px;font-weight:600;color:var(--t1);margin-left:12px;letter-spacing:0.5px}
 .sdot{width:8px;height:8px;border-radius:50%;background:var(--lon);box-shadow:0 0 8px var(--lon);animation:pulse 2s ease-in-out infinite}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:0.5}}
@@ -569,7 +479,6 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica N
 .led.on{background:radial-gradient(circle at 30% 30%,var(--lon) 0%,#00cc66 50%,#008844 100%);box-shadow:var(--log);border-color:#006633}
 .led.auto{background:radial-gradient(circle at 30% 30%,var(--lon) 0%,#00cc66 50%,#008844 100%);box-shadow:var(--log);border-color:#006633;animation:autoPulse 1.5s ease-in-out infinite}
 .led.sm{width:14px;height:14px}
-.colpick{width:24px;height:24px;border:none;background:transparent;cursor:pointer;padding:0}
 /* 3-state toggle */
 .tgl3{display:flex;flex-direction:column;align-items:center;gap:6px;cursor:pointer;user-select:none}
 .trk3{width:62px;height:30px;background:var(--sto);border-radius:15px;border:2px solid #111;position:relative;box-shadow:inset 0 2px 4px rgba(0,0,0,0.5),0 1px 0 rgba(255,255,255,0.1);transition:all 0.3s ease}
@@ -594,7 +503,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica N
 .bnum{font-size:14px;font-weight:700;color:var(--t3);font-family:"SF Mono",Monaco,monospace}
 .bbody{flex:1;display:flex;align-items:center;justify-content:center;padding:8px 0}
 .dicon{width:36px;height:36px;color:var(--t3);opacity:0.5;transition:all 0.3s ease}
-.dbay.active .dicon{color:var(--lon);opacity:0.8;filter:drop-shadow(0 0 4px rgba(255,255,255,0.3))}
+.dbay.active .dicon{color:var(--lon);opacity:0.8;filter:drop-shadow(0 0 4px rgba(0,255,136,0.3))}
 .bfooter{padding-top:4px}
 .fbar{display:flex;gap:12px;padding:20px 24px;background:rgba(0,0,0,0.2);border-top:1px solid rgba(0,0,0,0.3)}
 .abtn{flex:1;display:flex;align-items:center;justify-content:center;gap:8px;padding:14px 20px;background:var(--bp);border:none;border-radius:8px;color:white;font-size:14px;font-weight:600;cursor:pointer;box-shadow:0 4px 8px rgba(0,0,0,0.3),inset 0 1px 0 rgba(255,255,255,0.2);transition:all 0.2s ease}
@@ -615,20 +524,11 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica N
 .toast.show{transform:translateX(-50%) translateY(0);opacity:1}
 .toast.ok{border-left:3px solid var(--lon)}
 .toast.err{border-left:3px solid #ff4444}
-.btnrow{display:flex;gap:4px;flex-wrap:wrap;justify-content:center}
-.mbtn{width:28px;height:28px;border-radius:50%;border:1px solid rgba(255,255,255,0.1);background:#2a2a2a;color:#888;font-size:12px;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:all .2s}
-.mbtn:hover{background:#3a3a3a;transform:scale(1.1)}
-.mbtn.on.active{background:#00aa66;color:#fff;border-color:#00aa66}
-.mbtn.blink.active{background:#0066aa;color:#fff;border-color:#0066aa}
-.mbtn.auto.active{background:#8a3a00;color:#fff;border-color:#8a3a00}
-.presets{display:flex;gap:4px;margin-top:4px;justify-content:center}
-.preset{width:14px;height:14px;border-radius:50%;cursor:pointer;border:1px solid rgba(255,255,255,0.2);display:inline-block;transition:transform .2s}
-.preset:hover{transform:scale(1.3)}
 .init-panel{padding:28px 24px 24px;border-top:1px solid rgba(255,255,255,0.04)}
 .init-copy{color:var(--t2);font-size:13px;line-height:1.7;margin-bottom:20px}
 .init-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:18px}
 .choice{padding:14px 10px;border-radius:8px;border:1px solid rgba(255,255,255,0.08);background:linear-gradient(145deg,#303030,#242424);color:var(--t1);font-size:13px;font-weight:600;cursor:pointer;box-shadow:var(--bis);transition:all .2s ease}
-.choice:hover,.choice.active{border-color:#00aa66;box-shadow:var(--bis),0 0 0 1px rgba(255,255,255,.25),0 0 18px rgba(255,255,255,.16)}
+.choice:hover,.choice.active{border-color:#00aa66;box-shadow:var(--bis),0 0 0 1px rgba(0,255,136,.25),0 0 18px rgba(0,255,136,.16)}
 .init-actions{display:flex;gap:12px}
 .init-actions .abtn{flex:1}
 @media(max-width:480px){.dgrid{grid-template-columns:repeat(2,1fr)!important}.spanel{flex-direction:column}.divider{width:100%;height:1px;background:linear-gradient(90deg,transparent 0%,rgba(255,255,255,0.1) 50%,transparent 100%)}}
@@ -638,33 +538,40 @@ JS = r'''
 (function(){
 var LEDS=__LEDS_JSON__;
 var modes=__INIT_MODES__;
+var MODE_LABEL=['关闭','常亮','自动'];
 function api(m,p,b){var o={method:m,headers:{'Content-Type':'application/json'}};if(b)o.body=JSON.stringify(b);return fetch(p,o).then(function(r){return r.json()}).catch(function(e){return{success:false,message:e.message}})}
 function updateUI(led,mode,activity){modes[led]=mode;var el=document.getElementById(led+'-led');if(el){el.classList.remove('on','auto');if(mode==='on')el.classList.add('on')}
-var btns=document.querySelectorAll('.mbtn[onclick*="'+led+'"]');btns.forEach(function(b){b.classList.remove('active');if(b.classList.contains(mode))b.classList.add('active')})
 var tgl=document.querySelector('.tgl3[data-led="'+led+'"]');if(tgl){tgl.classList.remove('st0','st1','st2');var labels=['关闭','常亮','自动'];var states=['st0','st1','st2'];var idx=['off','on','auto'].indexOf(mode);if(idx>=0){tgl.classList.add(states[idx]);tgl.querySelector('.tlbl3').textContent=labels[idx]}}
 var bay=document.querySelector('.dbay[data-led="'+led+'"]');if(bay){bay.classList.toggle('active',mode!=='off')}
 var statusDot=document.getElementById('system-status');if(statusDot&&mode!=='off'){statusDot.style.animationName=(mode==='auto')?'autoPulse':'pulse'}}
 function toast(m,t){t=t||'ok';var e=document.getElementById('toast');e.textContent=m;e.className='toast show '+t;setTimeout(function(){e.classList.remove('show')},2500)}
 function lname(l){var m=l.match(/^disk(\d+)$/);if(m)return'磁盘'+m[1]+'灯';if(l==='power')return'电源灯';if(l==='netdev')return'网络灯';return l}
-function setLedMode(led,mode){api('POST','/api/control',{led:led,action:mode}).then(function(r){if(r.success){updateUI(led,mode);var label={'off':'关闭','on':'常亮','auto':'自动'}[mode];toast(lname(led)+' → '+label)}else toast('操作失败: '+r.message,'err')})}
-function cycleMode(led){var order=['off','on','auto'];var idx=order.indexOf(modes[led]||'off');var next=order[(idx+1)%3];setLedMode(led,next)}
-function allMode(mode){var labels={'off':'关闭','on':'常亮','auto':'自动'};var label=labels[mode]||mode;toast('正在将所有指示灯设为: '+label);api('POST','/api/all/'+mode,{}).then(function(r){if(r.success){LEDS.forEach(function(led){updateUI(led,mode)});toast('所有指示灯已设为: '+label)}else toast('操作失败: '+r.message,'err')})}
+function cycleMode(led){var order=['off','on','auto'];var idx=order.indexOf(modes[led]||'off');var next=order[(idx+1)%3];api('POST','/api/control',{led:led,action:next}).then(function(r){if(r.success){updateUI(led,next);toast(lname(led)+' → '+MODE_LABEL[(idx+1)%3])}else toast('操作失败: '+r.message,'err')})}
+function allMode(mode){var label=MODE_LABEL[['off','on','auto'].indexOf(mode)];toast('正在将所有指示灯设为: '+label);api('POST','/api/all/'+mode,{}).then(function(r){if(r.success){LEDS.forEach(function(led){updateUI(led,mode)});toast('所有指示灯已设为: '+label)}else toast('操作失败: '+r.message,'err')})}
 function resetConfig(){if(!confirm('重置会清空本地配置和保存的指示灯模式，并返回初始化页面。继续吗？'))return;api('POST','/api/reset',{}).then(function(r){if(r.success){toast('配置已重置');setTimeout(function(){location.href='/'},500)}else toast('重置失败: '+r.message,'err')})}
 function pollStatus(){api('GET','/api/status').then(function(r){if(r.success&&r.activity){for(var led in r.activity){if(modes[led]==='auto'){var el=document.getElementById(led+'-led');if(el){el.classList.remove('auto');if(r.activity[led])el.classList.add('on');else el.classList.remove('on')}}}}})}
-function setColor(led,hex){var r=parseInt(hex.substr(1,2),16),g=parseInt(hex.substr(3,2),16),b=parseInt(hex.substr(5,2),16);api('POST','/api/color',{led:led,r:r,g:g,b:b}).then(function(r){if(r.success){var cp=document.querySelector('.colpick[data-led="'+led+'"]');if(cp)cp.value=hex;toast(lname(led)+' 颜色: '+hex)}else toast('颜色设置失败','err')})}
 function init(){
 document.querySelectorAll('.tgl3').forEach(function(t){t.addEventListener('click',function(e){e.preventDefault();e.stopPropagation();var l=t.dataset.led;if(l&&LEDS.indexOf(l)!==-1)cycleMode(l)})});
-document.querySelectorAll('.dbay').forEach(function(b){b.addEventListener('click',function(e){if(e.target.closest('.mbtn')||e.target.closest('.colpick'))return;var l=b.dataset.led;if(l&&LEDS.indexOf(l)!==-1)cycleMode(l)})});
-document.querySelectorAll('.sitem').forEach(function(i){i.addEventListener('click',function(e){if(e.target.closest('.tgl3')||e.target.closest('.colpick'))return;var l=i.dataset.led;if(l&&LEDS.indexOf(l)!==-1)cycleMode(l)})});
+document.querySelectorAll('.dbay').forEach(function(b){b.addEventListener('click',function(e){if(e.target.closest('.tgl3'))return;var l=b.dataset.led;if(l&&LEDS.indexOf(l)!==-1)cycleMode(l)})});
+document.querySelectorAll('.sitem').forEach(function(i){i.addEventListener('click',function(e){if(e.target.closest('.tgl3'))return;var l=i.dataset.led;if(l&&LEDS.indexOf(l)!==-1)cycleMode(l)})});
 document.getElementById('btn-all-on').addEventListener('click',function(){allMode('on')});
 document.getElementById('btn-all-off').addEventListener('click',function(){allMode('off')});
 var autoBtn=document.getElementById('btn-all-auto');if(autoBtn)autoBtn.addEventListener('click',function(){allMode('auto')});
 var resetBtn=document.getElementById('btn-reset');if(resetBtn)resetBtn.addEventListener('click',resetConfig);
-    var chpwBtn=document.getElementById('btn-change-pw');if(chpwBtn)chpwBtn.addEventListener('click',function(){var oldPw=prompt('请输入旧密码:');if(!oldPw)return;var newPw=prompt('请输入新密码(至少3位):');if(!newPw||newPw.length<3){alert('新密码至少需要3位');return}api('POST','/api/change-password',{old_password:oldPw,new_password:newPw}).then(function(r){if(r.success){alert('密码修改成功！');location.href='/login'}else alert('修改失败: '+r.message)})});
-    document.querySelectorAll('.colpick').forEach(function(cp){cp.addEventListener('input',function(){var led=cp.dataset.led;api('POST','/api/color',{led:led,r:parseInt(cp.value.substr(1,2),16),g:parseInt(cp.value.substr(3,2),16),b:parseInt(cp.value.substr(5,2),16)}).then(function(r){if(!r.success)toast('颜色设置失败: '+r.message,'err')})})});
-    var marqBtn=document.getElementById('btn-marquee');if(marqBtn){var marqRunning=false;var marqTimer=null;marqBtn.addEventListener('click',function(){if(marqRunning){clearInterval(marqTimer);marqBtn.textContent='🏃 跑马灯';marqRunning=false;api('POST','/api/all/off',{});return}marqRunning=true;marqBtn.textContent='⏹ 停止';var disks=[];LEDS.forEach(function(l){if(l.match(/^disk/))disks.push(l)});if(disks.length<2)return;var idx=0;marqTimer=setInterval(function(){disks.forEach(function(d,i){api('POST','/api/control',{led:d,action:i===idx?'on':'off'})});idx=(idx+1)%disks.length},300)})}
-    LEDS.forEach(function(led){updateUI(led,modes[led]||'off')});
-setInterval(pollStatus,800)
+LEDS.forEach(function(led){updateUI(led,modes[led]||'off')});
+setInterval(pollStatus,800);
+LEDS.forEach(function(led){
+  var el=document.querySelector('[data-led="'+led+'"]');
+  if(el){
+    var cp=document.createElement('input');
+    cp.type='color';cp.value='#00ff88';cp.style.cssText='width:20px;height:20px;border:none;background:transparent;cursor:pointer;margin-left:8px';
+    cp.addEventListener('input',function(){
+      var v=cp.value;
+      fetch('/api/color',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({led:led,r:parseInt(v.substr(1,2),16),g:parseInt(v.substr(3,2),16),b:parseInt(v.substr(5,2),16)})}).then(function(r){return r.json()});
+    });
+    el.appendChild(cp);
+  }
+})
 }
 if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',init);else init()
 })()
@@ -708,29 +615,13 @@ HTML = r'''<!DOCTYPE html>
    <div class="spanel">
     <div class="sitem" data-led="power">
      <div class="sheader"><span class="slabel">电源</span><div class="led" id="power-led"></div></div>
-      <div class="tgl3" data-led="power"><div class="trk3"><div class="thm3"></div></div><span class="tlbl3"></span></div>
-      <div class="presets">
-       <span class="preset" style="background:#ffffff" onclick="setColor('power','#ffffff')"></span>
-       <span class="preset" style="background:#ff4444" onclick="setColor('power','#ff4444')"></span>
-       <span class="preset" style="background:#44ff44" onclick="setColor('power','#44ff44')"></span>
-       <span class="preset" style="background:#4488ff" onclick="setColor('power','#4488ff')"></span>
-       <span class="preset" style="background:#ffaa00" onclick="setColor('power','#ffaa00')"></span>
-      </div>
-      <input type="color" class="colpick" data-led="power" value="#ffffff" title="颜色">
-     </div>
+     <div class="tgl3" data-led="power"><div class="trk3"><div class="thm3"></div></div><span class="tlbl3"></span></div>
+    </div>
     <div class="divider"></div>
     <div class="sitem" data-led="netdev">
      <div class="sheader"><span class="slabel">网络</span><div class="led" id="netdev-led"></div></div>
-      <div class="tgl3" data-led="netdev"><div class="trk3"><div class="thm3"></div></div><span class="tlbl3"></span></div>
-      <div class="presets">
-       <span class="preset" style="background:#ffffff" onclick="setColor('netdev','#ffffff')"></span>
-       <span class="preset" style="background:#ff4444" onclick="setColor('netdev','#ff4444')"></span>
-       <span class="preset" style="background:#44ff44" onclick="setColor('netdev','#44ff44')"></span>
-       <span class="preset" style="background:#4488ff" onclick="setColor('netdev','#4488ff')"></span>
-       <span class="preset" style="background:#ffaa00" onclick="setColor('netdev','#ffaa00')"></span>
-      </div>
-      <input type="color" class="colpick" data-led="netdev" value="#ffffff" title="颜色">
-     </div>
+     <div class="tgl3" data-led="netdev"><div class="trk3"><div class="thm3"></div></div><span class="tlbl3"></span></div>
+    </div>
    </div>
   </div>
   <div class="dsection">
@@ -742,13 +633,11 @@ HTML = r'''<!DOCTYPE html>
   <div class="fbar">
    <button class="abtn" id="btn-all-on"><span class="bicon"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg></span>全部常亮</button>
    <button class="abtn auto" id="btn-all-auto"><span class="bicon"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 6V3L8 7l4 4V8c2.21 0 4 1.79 4 4 0 .68-.17 1.32-.47 1.88l1.46 1.46C17.63 14.38 18 13.23 18 12c0-3.31-2.69-6-6-6zm-4 6c0-.68.17-1.32.47-1.88L7.01 8.66C6.37 9.62 6 10.77 6 12c0 3.31 2.69 6 6 6v3l4-4-4-4v3c-2.21 0-4-1.79-4-4z"/></svg></span>全部自动</button>
-    <button class="abtn s" id="btn-all-off"><span class="bicon"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg></span>全部关闭</button>
-    <button class="abtn" id="btn-marquee" style="background:linear-gradient(180deg,#ff8800 0%,#aa5500 100%)">🏃 跑马灯</button>
-   </div>
-    <div class="fbar">
-    <button class="abtn" id="btn-change-pw" style="background:linear-gradient(180deg,#666 0%,#444 100%)"><span class="bicon"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm3.1-9H8.9V6c0-1.71 1.39-3.1 3.1-3.1s3.1 1.39 3.1 3.1v2z"/></svg></span>修改密码</button>
-    <button class="abtn danger" id="btn-reset"><span class="bicon"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 5V2L7 7l5 5V9c2.76 0 5 2.24 5 5 0 1.04-.32 2-.86 2.8l1.46 1.46C18.48 17.08 19 15.6 19 14c0-3.87-3.13-7-7-7zm-5.6.74C5.52 6.92 5 8.4 5 10c0 3.87 3.13 7 7 7v3l5-5-5-5v3c-2.76 0-5-2.24-5-5 0-1.04.32-2 .86-2.8L6.4 5.74z"/></svg></span>重置配置</button>
-   </div>
+   <button class="abtn s" id="btn-all-off"><span class="bicon"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg></span>全部关闭</button>
+  </div>
+  <div class="fbar">
+   <button class="abtn danger" id="btn-reset"><span class="bicon"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 5V2L7 7l5 5V9c2.76 0 5 2.24 5 5 0 1.04-.32 2-.86 2.8l1.46 1.46C18.48 17.08 19 15.6 19 14c0-3.87-3.13-7-7-7zm-5.6.74C5.52 6.92 5 8.4 5 10c0 3.87 3.13 7 7 7v3l5-5-5-5v3c-2.76 0-5-2.24-5-5 0-1.04.32-2 .86-2.8L6.4 5.74z"/></svg></span>重置配置</button>
+  </div>
  </div>
 </div>
 <div class="toast" id="toast"></div>
@@ -791,32 +680,9 @@ INIT_HTML = r'''<!DOCTYPE html>
 </body>
 </html>'''
 
+
 LOGIN_HTML = r'''<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>指示灯控制 - 登录</title>
-<style>{css}</style>
-</head>
-<body>
-<div class="nc">
- <div class="ncase">
-  <div class="hbar">
-   <div class="hicon"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg></div>
-   <h1 class="htitle">指示灯控制</h1>
-  </div>
-  <div class="ssection" style="text-align:center;padding:40px 24px">
-    <form onsubmit="return false" style="display:flex;flex-direction:column;gap:16px;max-width:300px;margin:0 auto">
-    <input id="pw" type="password" placeholder="管理员密码" onkeydown="if(event.key==='Enter')doLogin()" style="padding:12px 16px;border-radius:8px;border:1px solid rgba(255,255,255,0.1);background:#2a2a2a;color:#e0e0e0;font-size:16px;text-align:center;outline:none">
-    <button type="button" onclick="doLogin()" style="padding:12px;border-radius:8px;border:none;background:linear-gradient(180deg,#00aa66 0%,#008844 100%);color:white;font-size:16px;font-weight:600;cursor:pointer">登录</button>
-   </form>
-  </div>
- </div>
-</div>
-<script>function doLogin(){var pw=document.getElementById('pw').value;if(!pw)return;fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:pw})}).then(function(r){return r.json()}).then(function(d){if(d.success)location.href='/';else alert('密码错误')}).catch(function(e){alert('网络错误')})}</script>
-</body>
-</html>'''
+<html lang="zh-CN"><head><meta charset="UTF-8"><title>登录</title><style>body{background:#1a1a1a;display:flex;justify-content:center;align-items:center;min-height:100vh;font-family:sans-serif}div{background:#2a2a2a;padding:30px;border-radius:12px;text-align:center}input{display:block;width:200px;margin:10px auto;padding:10px;border-radius:6px;border:1px solid #444;background:#1a1a1a;color:#fff;text-align:center;font-size:16px}button{width:220px;padding:10px;border-radius:6px;border:none;background:#00aa66;color:#fff;font-size:16px;cursor:pointer;font-weight:600}h2{color:#fff;margin-bottom:20px}</style></head><body><div><h2>指示灯控制</h2><input id="pw" type="password" placeholder="管理员密码" onkeydown="if(event.key==='Enter')doLogin()"><button onclick="doLogin()">登录</button></div><script>function doLogin(){var p=document.getElementById('pw').value;if(!p)return;fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:p})}).then(function(r){return r.json()}).then(function(d){if(d.success)location.href='/';else alert('密码错误')}).catch(function(e){alert('网络错误')})}</script></body></html>'''
 
 
 def build_page():
@@ -824,25 +690,30 @@ def build_page():
     js = (JS
         .replace('__LEDS_JSON__', json.dumps(led_names))
         .replace('__INIT_MODES__', json.dumps(ctrl.modes)))
-    return HTML.replace('{css}', CSS).replace('{js}', js).replace('{disk_count}', str(disk_count)).replace('{disk_bays}', bays)
+    return HTML.format(
+        css=CSS,
+        js=js,
+        disk_count=disk_count,
+        disk_bays=bays
+    )
 
 def build_init_page():
     cfg_count = cfg.get('disk_count', 4)
     suggested = detected if detected in (2, 4, 6, 8) else (cfg_count if cfg_count in (2, 4, 6, 8) else 4)
     js = INIT_JS.replace('__INIT_DISK_COUNT__', str(suggested))
-    return INIT_HTML.replace('{css}', CSS).replace('{js}', js).replace('{detected}', str(detected or '未识别'))
+    return INIT_HTML.format(css=CSS, js=js, detected=detected or '未识别')
 
 # ── HTTP handler ───────────────────────────────────────
 
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
-        if self.path in ('/', '/index.html') or self.path.startswith('/?') or self.path.startswith('/index.html?'):
+        if self.path in ('/', '/index.html'):
             if need_auth and not check_auth(self.headers):
-                self._html(200, LOGIN_HTML.replace('{css}', CSS))
+                self._html(200, LOGIN_HTML)
                 return
             self._html(200, build_page() if initialized else build_init_page())
         elif self.path == '/login':
-            self._html(200, LOGIN_HTML.replace('{css}', CSS))
+            self._html(200, LOGIN_HTML)
         elif self.path == '/api/status':
             self._json(200, {
                 'success': True,
@@ -861,8 +732,6 @@ class Handler(BaseHTTPRequestHandler):
                 'hardware_leds': sorted(led_statuses.keys()),
                 'probe_error': probe_error,
             })
-        elif self.path == '/api/auth-status':
-            self._json(200, {'authenticated': check_auth(self.headers)})
         else:
             self._json(404, {})
 
@@ -875,27 +744,34 @@ class Handler(BaseHTTPRequestHandler):
         except json.JSONDecodeError:
             return self._json(400, {'success': False, 'message': 'Invalid JSON'})
 
-        if self.path == '/api/control':
-            self._control(data)
-        elif self.path == '/api/login':
+        if self.path == '/api/login':
             self._login(data)
-        elif self.path == '/api/change-password':
-            self._change_password(data)
-        elif self.path == '/api/auth-status':
-            self._json(200, {'authenticated': check_auth(self.headers)})
+        elif self.path == '/api/control':
+            self._control(data)
+        elif self.path == '/api/color':
+            self._color(data)
         elif self.path in ('/api/all/off', '/api/all/on', '/api/all/auto'):
             mode = self.path.rsplit('/', 1)[-1]
             self._all(mode)
         elif self.path == '/api/config':
             self._set_config(data)
-        elif self.path == '/api/color':
-            self._color(data)
-        elif self.path == '/api/brightness':
-            self._brightness(data)
         elif self.path == '/api/reset':
             self._reset_config()
         else:
             self._json(404, {})
+
+    def _login(self, data):
+        password = data.get('password', '')
+        if password == auth_cfg.get('password', 'admin123'):
+            auth_cfg['session'] = secrets.token_hex(32)
+            save_json(AUTH_FILE, auth_cfg)
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json; charset=utf-8')
+            self.send_header('Set-Cookie', f'led_session={auth_cfg["session"]}; Path=/; HttpOnly')
+            self.end_headers()
+            self.wfile.write(json.dumps({'success': True}, ensure_ascii=False).encode('utf-8'))
+        else:
+            self._json(401, {'success': False, 'message': '密码错误'})
 
     def _control(self, data):
         led = data.get('led', '')
@@ -938,12 +814,7 @@ class Handler(BaseHTTPRequestHandler):
             led_names = LED_BASE + [f'disk{i}' for i in range(1, disk_count + 1)]
             ctrl.stop_monitor()
             ctrl = LEDController(led_names)
-            saved_colors = load_json(STATE_COLORS_FILE, {})
-            ctrl._colors = saved_colors.get('colors', {})
-            ctrl._brightnesses = saved_colors.get('brightnesses', {})
-            ctrl._disk_map = detect_disks()
-            ctrl._disk_presence = detect_disk_presence(ctrl._disk_map)
-            ctrl.restore_state(hardware_modes=hardware_modes, apply_hardware=True)
+            ctrl.restore_state(hardware_modes=hardware_modes)
             ctrl.start_monitor()
             self._json(200, {'success': True, 'message': f'已切换到 {disk_count} 盘位', 'disk_count': disk_count, 'leds': led_names})
         else:
@@ -976,40 +847,9 @@ class Handler(BaseHTTPRequestHandler):
         led_names = LED_BASE + [f'disk{i}' for i in range(1, disk_count + 1)]
         ctrl.stop_monitor()
         ctrl = LEDController(led_names)
-        saved_colors = load_json(STATE_COLORS_FILE, {})
-        ctrl._colors = saved_colors.get('colors', {})
-        ctrl._brightnesses = saved_colors.get('brightnesses', {})
-        ctrl._disk_map = detect_disks()
-        ctrl._disk_presence = detect_disk_presence(ctrl._disk_map)
-        ctrl.restore_state(hardware_modes=hardware_modes, apply_hardware=True)
+        ctrl.restore_state(hardware_modes=hardware_modes, apply_hardware=False)
         ctrl.start_monitor()
         self._json(200, {'success': True, 'message': '配置已重置', 'initialized': initialized})
-
-    def _login(self, data):
-        password = data.get('password', '')
-        if password == auth_cfg.get('password', 'admin123'):
-            session_token = base64.b64encode(secrets.token_bytes(32)).decode()
-            auth_cfg['session'] = session_token
-            save_json(AUTH_FILE, auth_cfg)
-            self.send_response(200)
-            self.send_header('Content-Type', 'application/json; charset=utf-8')
-            self.send_header('Set-Cookie', f'led_session={session_token}; Path=/; HttpOnly; SameSite=Strict')
-            self.end_headers()
-            self.wfile.write(json.dumps({'success': True}, ensure_ascii=False).encode('utf-8'))
-        else:
-            self._json(401, {'success': False, 'message': '密码错误'})
-
-    def _change_password(self, data):
-        old_pw = data.get('old_password', '')
-        new_pw = data.get('new_password', '')
-        if old_pw != auth_cfg.get('password', ''):
-            return self._json(400, {'success': False, 'message': '旧密码错误'})
-        if not new_pw or len(new_pw) < 3:
-            return self._json(400, {'success': False, 'message': '新密码至少3位'})
-        auth_cfg['password'] = new_pw
-        save_json(AUTH_FILE, auth_cfg)
-        print(f'Password changed to: {new_pw}')
-        self._json(200, {'success': True, 'message': '密码已修改'})
 
     def _color(self, data):
         led = data.get('led', '')
@@ -1017,43 +857,14 @@ class Handler(BaseHTTPRequestHandler):
         g = data.get('g', 0)
         b = data.get('b', 0)
         try: r, g, b = int(r), int(g), int(b)
-        except (ValueError, TypeError): return self._json(400, {'success': False, 'message': 'Invalid color values'})
-        if not (0 <= r <= 255 and 0 <= g <= 255 and 0 <= b <= 255):
-            return self._json(400, {'success': False, 'message': 'Color values must be 0-255'})
+        except: return self._json(400, {'success': False, 'message': 'Invalid values'})
         if led not in led_names:
-            return self._json(400, {'success': False, 'message': f'无效指示灯: {led}'})
-        if led.startswith('disk'):
-            m = re.match(r'disk(\d+)', led)
-            if m and not ctrl._disk_presence.get(int(m.group(1)), False):
-                return self._json(400, {'success': False, 'message': '该槽位无硬盘'})
+            return self._json(400, {'success': False, 'message': f'Invalid LED: {led}'})
         ok, _, err = run(led, '-color', str(r), str(g), str(b))
         if ok:
-            ctrl._colors[led] = [r, g, b]
-            save_json(STATE_COLORS_FILE, {'colors': ctrl._colors, 'brightnesses': ctrl._brightnesses})
-            self._json(200, {'success': True, 'message': f'{led} color set to RGB({r},{g},{b})'})
+            self._json(200, {'success': True, 'message': f'{led} color set'})
         else:
-            self._json(500, {'success': False, 'message': err or '设置颜色失败'})
-
-    def _brightness(self, data):
-        led = data.get('led', '')
-        brightness = data.get('brightness', 0)
-        try: brightness = int(brightness)
-        except (ValueError, TypeError): return self._json(400, {'success': False, 'message': 'Invalid brightness'})
-        if not 0 <= brightness <= 255:
-            return self._json(400, {'success': False, 'message': 'Brightness must be 0-255'})
-        if led not in led_names:
-            return self._json(400, {'success': False, 'message': f'无效指示灯: {led}'})
-        if led.startswith('disk'):
-            m = re.match(r'disk(\d+)', led)
-            if m and not ctrl._disk_presence.get(int(m.group(1)), False):
-                return self._json(400, {'success': False, 'message': '该槽位无硬盘'})
-        ok, _, err = run(led, '-brightness', str(brightness))
-        if ok:
-            ctrl._brightnesses[led] = brightness
-            save_json(STATE_COLORS_FILE, {'colors': ctrl._colors, 'brightnesses': ctrl._brightnesses})
-            self._json(200, {'success': True, 'message': f'{led} brightness set to {brightness}'})
-        else:
-            self._json(500, {'success': False, 'message': err or '设置亮度失败'})
+            self._json(500, {'success': False, 'message': err or 'Failed'})
 
     def _body(self):
         length = int(self.headers.get('Content-Length', 0))
