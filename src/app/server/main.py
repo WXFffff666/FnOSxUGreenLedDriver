@@ -805,14 +805,14 @@ LOGIN_HTML = r'''<!DOCTYPE html>
    <h1 class="htitle">指示灯控制</h1>
   </div>
   <div class="ssection" style="text-align:center;padding:40px 24px">
-   <form onsubmit="login(event)" style="display:flex;flex-direction:column;gap:16px;max-width:300px;margin:0 auto">
+    <form onsubmit="return login(event)" action="#" method="post" style="display:flex;flex-direction:column;gap:16px;max-width:300px;margin:0 auto">
     <input id="pw" type="password" placeholder="管理员密码" style="padding:12px 16px;border-radius:8px;border:1px solid rgba(255,255,255,0.1);background:#2a2a2a;color:#e0e0e0;font-size:16px;text-align:center;outline:none">
     <button type="submit" style="padding:12px;border-radius:8px;border:none;background:linear-gradient(180deg,#00aa66 0%,#008844 100%);color:white;font-size:16px;font-weight:600;cursor:pointer">登录</button>
    </form>
   </div>
  </div>
 </div>
-<script>function login(e){{e.preventDefault();fetch('/api/login',{{method:'POST',body:JSON.stringify({{password:document.getElementById('pw').value}})}}).then(r=>r.json()).then(d=>{{if(d.success)location.href='/';else alert('密码错误')}})}}</script>
+<script>function login(e){{e.preventDefault();fetch('/api/login',{{method:'POST',body:JSON.stringify({{password:document.getElementById('pw').value}})}}).then(r=>r.json()).then(d=>{{if(d.success)location.href='/';else alert('密码错误')}});return false}}</script>
 </body>
 </html>'''
 
@@ -835,7 +835,7 @@ def build_init_page():
 
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
-        if self.path in ('/', '/index.html'):
+        if self.path in ('/', '/index.html') or self.path.startswith('/?') or self.path.startswith('/index.html?'):
             if need_auth and not check_auth(self.headers):
                 self._html(200, LOGIN_HTML.replace('{css}', CSS))
                 return
