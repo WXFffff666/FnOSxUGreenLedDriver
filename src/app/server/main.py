@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-FnUGreenLed v5.7 — LED Controller for UGREEN NAS
+FnUGreenLed v6.0 — LED Controller for UGREEN NAS
 - Three LED states: off / solid on / auto (responsive blink)
 - Disk I/O monitoring via /sys/block/*/stat
 - Network traffic monitoring via /sys/class/net/*/statistics
@@ -79,20 +79,20 @@ def load_json(path, default):
         try:
             with open(path) as f:
                 data = json.load(f)
-                print(f'Loaded: {path}')
                 return data
         except Exception as e:
             print(f'Load failed: {path} — {e}')
     return default
 
 def save_json(path, data):
+    tmp = path + '.tmp'
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, 'w') as f:
+        with open(tmp, 'w') as f:
             json.dump(data, f)
-        print(f'Saved: {path}')
+        os.replace(tmp, path)  # atomic rename
     except Exception as e:
-        print(f'Save failed: {path} — {e}')
+        print(f'Save FAILED: {path} — {e}')
 
 def remove_file(path):
     try:
@@ -297,7 +297,7 @@ class LEDController:
         hardware_modes = hardware_modes or {}
         saved = load_json(STATE_FILE, {})
         for led in self.leds:
-            mode = hardware_modes.get(led, saved.get(led, 'off'))
+            mode = hardware_modes.get(led, saved.get(led, 'auto'))
             if mode not in VALID_MODES:
                 mode = 'off'
             self.modes[led] = mode
@@ -317,8 +317,6 @@ class LEDController:
                 ok, msg = self._apply(led, mode, activity=False)
                 if not ok:
                     print(f'Restore {led} failed: {msg}')
-        print(f'Restored state: {self.modes}')
-
     def set_mode(self, led, mode):
         with self._lock:
             if led not in self.leds:
@@ -356,7 +354,6 @@ class LEDController:
 
     def _persist(self):
         save_json(STATE_FILE, dict(self.modes))
-        print(f'Saved state: {self.modes}')
 
     # ── background monitor ────────────────────────────────
 
@@ -432,7 +429,8 @@ class LEDController:
 
 # ── init ──────────────────────────────────────────────────
 
-print(f'FnUGreenLed v5.7  port={PORT}  var={VAR}')
+print(f'FnUGreenLed v6.0  port={PORT}  var={VAR}')
+
 
 auth_cfg = load_json(AUTH_FILE, {})
 if 'password' not in auth_cfg:
