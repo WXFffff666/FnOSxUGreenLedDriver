@@ -64,7 +64,7 @@ docker run --platform linux/amd64 --rm \
 
 ```bash
 fnpack build --directory src
-# 生成 FnUGreenLed-1.1.0.x86_64.fpk
+# 生成 FnUGreenLed-1.2.0.x86_64.fpk
 ```
 
 ## 安装与调试
