@@ -805,14 +805,14 @@ LOGIN_HTML = r'''<!DOCTYPE html>
    <h1 class="htitle">指示灯控制</h1>
   </div>
   <div class="ssection" style="text-align:center;padding:40px 24px">
-    <form onsubmit="return login(event)" action="#" method="post" style="display:flex;flex-direction:column;gap:16px;max-width:300px;margin:0 auto">
-    <input id="pw" type="password" placeholder="管理员密码" style="padding:12px 16px;border-radius:8px;border:1px solid rgba(255,255,255,0.1);background:#2a2a2a;color:#e0e0e0;font-size:16px;text-align:center;outline:none">
-    <button type="submit" style="padding:12px;border-radius:8px;border:none;background:linear-gradient(180deg,#00aa66 0%,#008844 100%);color:white;font-size:16px;font-weight:600;cursor:pointer">登录</button>
+    <form onsubmit="return false" style="display:flex;flex-direction:column;gap:16px;max-width:300px;margin:0 auto">
+    <input id="pw" type="password" placeholder="管理员密码" onkeydown="if(event.key==='Enter')doLogin()" style="padding:12px 16px;border-radius:8px;border:1px solid rgba(255,255,255,0.1);background:#2a2a2a;color:#e0e0e0;font-size:16px;text-align:center;outline:none">
+    <button type="button" onclick="doLogin()" style="padding:12px;border-radius:8px;border:none;background:linear-gradient(180deg,#00aa66 0%,#008844 100%);color:white;font-size:16px;font-weight:600;cursor:pointer">登录</button>
    </form>
   </div>
  </div>
 </div>
-<script>function login(e){{e.preventDefault();fetch('/api/login',{{method:'POST',body:JSON.stringify({{password:document.getElementById('pw').value}})}}).then(r=>r.json()).then(d=>{{if(d.success)location.href='/';else alert('密码错误')}});return false}}</script>
+<script>function doLogin(){var pw=document.getElementById('pw').value;if(!pw)return;fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:pw})}).then(function(r){return r.json()}).then(function(d){if(d.success)location.href='/';else alert('密码错误')})}</script>
 </body>
 </html>'''
 
