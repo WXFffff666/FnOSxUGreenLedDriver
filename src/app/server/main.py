@@ -299,6 +299,12 @@ class LEDController:
                 mode = 'off'
             self.modes[led] = mode
             self.activity[led] = False
+            # Empty disk bays: skip hardware, stay off
+            if led.startswith('disk'):
+                m = re.match(r'disk(\d+)', led)
+                if m and int(m.group(1)) not in self._disk_map:
+                    self.modes[led] = 'off'
+                    continue
             # Power LED always on in auto mode (system is running)
             if led == 'power' and mode == 'auto':
                 run(led, '-on', '-color', '255', '255', '255')
@@ -328,7 +334,7 @@ class LEDController:
             ok, _, err = run(led, '-on', '-color', '255', '255', '255')
         elif mode == 'auto':
             if activity:
-                ok, _, err = run(led, '-blink', str(BLINK_ON_MS), str(BLINK_OFF_MS))
+                ok, _, err = run(led, '-on', '-color', '255', '255', '255')
             else:
                 ok, _, err = run(led, '-on', '-color', '255', '255', '255')
         else:
@@ -453,7 +459,8 @@ led_names = LED_BASE + [f'disk{i}' for i in range(1, disk_count + 1)]
 print(f'Active LEDs: {led_names}')
 
 ctrl = LEDController(led_names)
-ctrl.restore_state(hardware_modes=hardware_modes, apply_hardware=initialized)
+ctrl._disk_map = detect_disks()
+ctrl.restore_state(hardware_modes=hardware_modes, apply_hardware=True)
 ctrl.start_monitor()
 
 # ── HTML ──────────────────────────────────────────────────
@@ -544,6 +551,13 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica N
 .init-actions{display:flex;gap:12px}
 .init-actions .abtn{flex:1}
 @media(max-width:480px){.dgrid{grid-template-columns:repeat(2,1fr)!important}.spanel{flex-direction:column}.divider{width:100%;height:1px;background:linear-gradient(90deg,transparent 0%,rgba(255,255,255,0.1) 50%,transparent 100%)}}
+.pwform{display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.8);z-index:999;justify-content:center;align-items:center}
+.pwform.show{display:flex}
+.pwbox{background:#2a2a2a;padding:24px;border-radius:12px;text-align:center;width:280px}
+.pwbox input{display:block;width:100%;margin:8px 0;padding:10px;border-radius:6px;border:1px solid #444;background:#1a1a1a;color:#fff;text-align:center}
+.pwbox button{margin:4px;padding:10px 20px;border-radius:6px;border:none;cursor:pointer;font-weight:600}
+.pwbox .save{background:#00aa66;color:#fff}
+.pwbox .cancel{background:#555;color:#fff}
 '''
 
 JS = r'''
@@ -562,6 +576,7 @@ function cycleMode(led){var order=['off','on','auto'];var idx=order.indexOf(mode
 function allMode(mode){var label=MODE_LABEL[['off','on','auto'].indexOf(mode)];toast('正在将所有指示灯设为: '+label);api('POST','/api/all/'+mode,{}).then(function(r){if(r.success){LEDS.forEach(function(led){updateUI(led,mode)});toast('所有指示灯已设为: '+label)}else toast('操作失败: '+r.message,'err')})}
 function resetConfig(){if(!confirm('重置会清空本地配置和保存的指示灯模式，并返回初始化页面。继续吗？'))return;api('POST','/api/reset',{}).then(function(r){if(r.success){toast('配置已重置');setTimeout(function(){location.href='/'},500)}else toast('重置失败: '+r.message,'err')})}
 function pollStatus(){api('GET','/api/status').then(function(r){if(r.success&&r.activity){for(var led in r.activity){if(modes[led]==='auto'){var el=document.getElementById(led+'-led');if(el){el.classList.remove('auto');if(r.activity[led])el.classList.add('on');else el.classList.remove('on')}}}}})}
+function changePw(){var o=document.getElementById('pw-old').value;var n=document.getElementById('pw-new').value;if(!o||!n||n.length<3){alert('请填写完整,新密码至少3位');return}fetch('/api/change-password',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({old_password:o,new_password:n})}).then(function(r){return r.json()}).then(function(d){if(d.success){alert('密码已修改!');document.getElementById('pwform').classList.remove('show');document.getElementById('pw-old').value='';document.getElementById('pw-new').value=''}else alert(d.message)})}
 function init(){
 document.querySelectorAll('.tgl3').forEach(function(t){t.addEventListener('click',function(e){e.preventDefault();e.stopPropagation();var l=t.dataset.led;if(l&&LEDS.indexOf(l)!==-1)cycleMode(l)})});
 document.querySelectorAll('.dbay').forEach(function(b){b.addEventListener('click',function(e){if(e.target.closest('.tgl3'))return;var l=b.dataset.led;if(l&&LEDS.indexOf(l)!==-1)cycleMode(l)})});
@@ -570,7 +585,7 @@ document.getElementById('btn-all-on').addEventListener('click',function(){allMod
 document.getElementById('btn-all-off').addEventListener('click',function(){allMode('off')});
 var autoBtn=document.getElementById('btn-all-auto');if(autoBtn)autoBtn.addEventListener('click',function(){allMode('auto')});
 var resetBtn=document.getElementById('btn-reset');if(resetBtn)resetBtn.addEventListener('click',resetConfig);
-var cpw=document.getElementById('btn-cpw');if(cpw)cpw.addEventListener('click',function(){var o=prompt('旧密码:');if(!o)return;var n=prompt('新密码(≥3位):');if(!n||n.length<3){alert('至少3位');return}fetch('/api/change-password',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({old_password:o,new_password:n})}).then(function(r){return r.json()}).then(function(d){if(d.success){alert('密码已修改!');location.href='/'}else alert(d.message)})});
+var cpw=document.getElementById('btn-cpw');if(cpw)cpw.addEventListener('click',function(){document.getElementById('pwform').classList.add('show')});
 LEDS.forEach(function(led){updateUI(led,modes[led]||'off')});
 setInterval(pollStatus,800);
 LEDS.forEach(function(led){
@@ -654,6 +669,7 @@ HTML = r'''<!DOCTYPE html>
   </div>
  </div>
 </div>
+<div class="pwform" id="pwform"><div class="pwbox"><h3 style="color:#fff;margin-bottom:16px">修改密码</h3><input id="pw-old" type="password" placeholder="旧密码"><input id="pw-new" type="password" placeholder="新密码(至少3位)"><button class="save" onclick="changePw()">保存</button><button class="cancel" onclick="document.getElementById('pwform').classList.remove('show')">取消</button></div></div>
 <div class="toast" id="toast"></div>
 <script>{js}</script>
 </body>
@@ -830,7 +846,8 @@ class Handler(BaseHTTPRequestHandler):
             led_names = LED_BASE + [f'disk{i}' for i in range(1, disk_count + 1)]
             ctrl.stop_monitor()
             ctrl = LEDController(led_names)
-            ctrl.restore_state(hardware_modes=hardware_modes)
+            ctrl._disk_map = detect_disks()
+            ctrl.restore_state(hardware_modes=hardware_modes, apply_hardware=True)
             ctrl.start_monitor()
             self._json(200, {'success': True, 'message': f'已切换到 {disk_count} 盘位', 'disk_count': disk_count, 'leds': led_names})
         else:
@@ -863,7 +880,8 @@ class Handler(BaseHTTPRequestHandler):
         led_names = LED_BASE + [f'disk{i}' for i in range(1, disk_count + 1)]
         ctrl.stop_monitor()
         ctrl = LEDController(led_names)
-        ctrl.restore_state(hardware_modes=hardware_modes, apply_hardware=False)
+        ctrl._disk_map = detect_disks()
+        ctrl.restore_state(hardware_modes=hardware_modes, apply_hardware=True)
         ctrl.start_monitor()
         self._json(200, {'success': True, 'message': '配置已重置', 'initialized': initialized})
 
