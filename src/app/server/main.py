@@ -113,7 +113,10 @@ def check_auth(headers):
     if session and session == auth_cfg.get('session', ''):
         return True
     token = headers.get('X-Auth-Token', '')
-    return token == auth_cfg.get('token', '')
+    stored = auth_cfg.get('token', '')
+    if token and stored and token == stored:
+        return True
+    return False
 
 # ── hardware probe ───────────────────────────────────────
 
@@ -358,7 +361,13 @@ class LEDController:
                     args += ['-brightness', str(self._brightnesses[led])]
                 ok, _, err = run(led, *args)
             else:
-                ok, _, err = run(led, '-off')
+                # Drive present, no activity: show solid ON with color
+                args = ['-on']
+                if led in self._colors:
+                    c = self._colors[led]; args += ['-color', str(c[0]), str(c[1]), str(c[2])]
+                if led in self._brightnesses:
+                    args += ['-brightness', str(self._brightnesses[led])]
+                ok, _, err = run(led, *args)
         else:
             return False, f'Invalid mode: {mode}'
         return ok, err or 'OK'
@@ -469,6 +478,10 @@ if 'password' not in auth_cfg:
     save_json(AUTH_FILE, auth_cfg)
     print(f'Default admin password set: {AUTH_PASSWORD}')
 need_auth = True
+
+if not auth_cfg.get('token'):
+    auth_cfg['token'] = secrets.token_hex(16)
+    save_json(AUTH_FILE, auth_cfg)
 
 initialized = os.path.exists(CONFIG_FILE)
 default_disk_count = detected or model_info.get('disk_count') or 4
@@ -793,8 +806,8 @@ class Handler(BaseHTTPRequestHandler):
         if self.path in ('/', '/index.html'):
             if need_auth and not check_auth(self.headers):
                 self._html(200, LOGIN_HTML.replace('{css}', CSS))
-            else:
-                self._html(200, build_page() if initialized else build_init_page())
+                return
+            self._html(200, build_page() if initialized else build_init_page())
         elif self.path == '/login':
             self._html(200, LOGIN_HTML.replace('{css}', CSS))
         elif self.path == '/api/status':
