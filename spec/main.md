@@ -44,7 +44,7 @@ The current uncommitted code expands the app from fixed DXP4800 manual control i
 - **Activity monitoring**: Auto mode polls `/sys/class/net/*/statistics` and `/sys/block/*/stat`
 - **Disk mapping**: Uses ATA mapping by default and applies the upstream DXP6800 slot order override
 
-### Version 2.2 — FnUGreenLed v1.2.0 (Current)
+### Version 2.2 — FnUGreenLed v1.2.0 (Current, maintained by WXFffff666)
 
 Released June 2026. Adds explicit DXP4800 Plus model support:
 
@@ -235,6 +235,8 @@ FnUGreenLed/
 | `service_port` | 19580 | HTTP server listening port |
 | `desktop_uidir` | ui | Standard UI directory |
 | `desktop_applaunchname` | FnUGreenLed.Application | Matches entry key in `app/ui/config` |
+| `maintainer` | WXFffff666 | Fork maintainer (original: Mikawawawa) |
+| `distributor` | WXFffff666 | Fork distributor |
 
 ## Privilege Configuration
 

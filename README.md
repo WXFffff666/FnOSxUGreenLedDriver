@@ -2,6 +2,10 @@
 
 UGREEN NAS 的 LED 指示灯控制应用，基于 fnOS（飞牛）应用框架开发。
 
+> **🔱 Fork 自 [Mikawawawa/FnOSxUGreenLedDriver](https://github.com/Mikawawawa/FnOSxUGreenLedDriver)**（原始作者：Mikawawawa）  
+> 当前维护者：[WXFffff666](https://github.com/WXFffff666)  
+> 版本：v1.2.0 — 新增 DXP4800 Plus 完整支持
+
 ## 功能
 
 - 控制 NAS 前面板 LED：电源、网络、磁盘槽位
@@ -71,16 +75,24 @@ fnpack build --directory src
 
 ### 在 NAS 上安装
 
+> ⚠️ **安装安全性说明**：本应用安装过程**完全无破坏性**：
+> - 仅加载 `i2c-dev` 内核模块（已加载则跳过）
+> - 创建专用用户 `ledcontroller` / 用户组 `ledcontroller`（不影响现有用户）
+> - 在 `/usr/local/bin/` 创建 `ugreen_leds_cli` 符号链接
+> - 所有数据写入应用专属目录 `/var/apps/FnUGreenLed/var/`，**不触碰系统文件**
+> - 卸载时 fnOS 自动清理上述所有内容
+
 ```bash
-# SSH 到 NAS，启用第三方安装
+# 1. 从 GitHub Release 下载 .fpk 文件
+#    https://github.com/WXFffff666/FnOSxUGreenLedDriver/releases
+
+# 2. SSH 到 NAS，启用第三方安装
 appcenter-cli manual-install enable
 
-# 从本地目录安装（开发调试推荐）
-cd /path/to/project/src
-appcenter-cli install-local
+# 3. 安装 .fpk
+appcenter-cli install-fpk /path/to/FnUGreenLed.fpk
 
-# 或从 fpk 文件安装
-appcenter-cli install-fpk FnUGreenLed-1.1.0.x86_64.fpk
+# 4. 安装完成后，在 fnOS 桌面打开「指示灯控制」即可
 ```
 
 ### NAS 环境检查
@@ -166,3 +178,10 @@ fnOS 桌面 → 浏览器打开 http://127.0.0.1:19580
 - `auto` 模式依赖 Linux `/sys/class/net` 和 `/sys/block` 统计信息
 - CLI 仍是硬件写入工具，真实 LED 状态以应用持久化状态和自动检测结果为准
 - 已测试 DXP4800 Plus，LED 控制功能与 DXP4800 完全一致
+- DXP4800 Plus 的 DMI 产品名确认为 `DXP4800 Plus`，代码中已添加双前缀匹配兼容
+
+## 致谢
+
+- 原始项目 [Mikawawawa/FnOSxUGreenLedDriver](https://github.com/Mikawawawa/FnOSxUGreenLedDriver) — 应用框架与 UI 设计
+- LED 驱动 [miskcoo/ugreen_leds_controller](https://github.com/miskcoo/ugreen_leds_controller) — I2C 协议与 CLI 实现
+- DXP4800 Plus 适配验证参考 [Kerryliu 的 TrueNAS 指南](https://gist.github.com/Kerryliu/c380bb6b3b69be5671105fc23e19b7e8)
