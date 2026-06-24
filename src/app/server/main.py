@@ -10,6 +10,7 @@ FnUGreenLed v2.0 — LED Controller for UGREEN NAS
 import os
 import secrets
 import json
+import base64
 import subprocess
 import threading
 import time
@@ -48,6 +49,7 @@ CLI = _BUNDLED if os.path.exists(_BUNDLED) else '/usr/local/bin/ugreen_leds_cli'
 PORT = int(os.environ.get('TRIM_SERVICE_PORT', 19580))
 VAR = os.environ.get('TRIM_PKGVAR', '/tmp')
 STATE_FILE = os.path.join(VAR, 'led_state.json')
+STATE_COLORS_FILE = os.path.join(VAR, 'led_colors.json')
 CONFIG_FILE = os.path.join(VAR, 'device_config.json')
 
 BLINK_ON_MS = 80
@@ -101,6 +103,15 @@ def remove_file(path):
     return None
 
 def check_auth(headers):
+    cookie_header = headers.get('Cookie', '')
+    cookies = {}
+    for item in cookie_header.split(';'):
+        if '=' in item:
+            k, v = item.strip().split('=', 1)
+            cookies[k] = v
+    session = cookies.get('led_session', '')
+    if session and session == auth_cfg.get('session', ''):
+        return True
     token = headers.get('X-Auth-Token', '')
     return token == auth_cfg.get('token', '')
 
@@ -276,6 +287,8 @@ class LEDController:
     def __init__(self, led_names):
         self.leds = led_names
         self.modes = {}     # led -> 'off'|'on'|'auto'
+        self._colors = {}
+        self._brightnesses = {}
         self.activity = {}  # led -> bool (is currently blinking)
         self._disk_map = {}
         self._net_iface = None
@@ -305,12 +318,22 @@ class LEDController:
                 ok, msg = self._apply(led, mode, activity=False)
                 if not ok:
                     print(f'Restore {led} failed: {msg}')
+                if ok:
+                    if led in self._colors:
+                        c = self._colors[led]
+                        run(led, '-color', str(c[0]), str(c[1]), str(c[2]))
+                    if led in self._brightnesses:
+                        run(led, '-brightness', str(self._brightnesses[led]))
         print(f'Restored state: {self.modes}')
 
     def set_mode(self, led, mode):
         with self._lock:
             if led not in self.leds:
                 return False, f'Invalid LED: {led}'
+            if led.startswith('disk'):
+                m = re.match(r'disk(\d+)', led)
+                if m and not self._disk_presence.get(int(m.group(1)), False):
+                    return False, '该槽位无硬盘'
             ok, msg = self._apply(led, mode, activity=False)
             if not ok:
                 return False, msg
@@ -331,7 +354,12 @@ class LEDController:
             ok, _, err = run(led, '-on')
         elif mode == 'auto':
             if activity:
-                ok, _, err = run(led, '-blink', str(BLINK_ON_MS), str(BLINK_OFF_MS))
+                args = ['-blink', str(BLINK_ON_MS), str(BLINK_OFF_MS)]
+                if led in self._colors:
+                    c = self._colors[led]; args += ['-color', str(c[0]), str(c[1]), str(c[2])]
+                if led in self._brightnesses:
+                    args += ['-brightness', str(self._brightnesses[led])]
+                ok, _, err = run(led, *args)
             else:
                 ok, _, err = run(led, '-off')
         else:
@@ -366,8 +394,15 @@ class LEDController:
         self._stop.set()
 
     def _monitor_loop(self):
+        tick = 0
         while not self._stop.wait(MONITOR_INTERVAL):
             try:
+                tick += 1
+                if tick % 60 == 0:
+                    new_map = detect_disks()
+                    if new_map != self._disk_map:
+                        self._disk_map = new_map
+                        self._disk_presence = detect_disk_presence(new_map)
                 self._check_network()
                 self._check_disks()
             except Exception:
@@ -429,16 +464,14 @@ hardware_modes = {led: data['mode'] for led, data in led_statuses.items()}
 print(f'Model: {model_info.get("product_name") or model_info.get("name")}')
 print(f'Probe: {detected} disk LEDs detected, leds={sorted(led_statuses.keys())}, error={probe_error or "none"}')
 
-# Load or generate auth token
+# Load or generate auth config
 auth_cfg = load_json(AUTH_FILE, {})
-if not auth_cfg.get('token'):
-    token = secrets.token_hex(16)
-    auth_cfg = {'token': token, 'note': 'Include this in X-Auth-Token header for LED control'}
+AUTH_PASSWORD = auth_cfg.get('password', 'admin123')
+if 'password' not in auth_cfg:
+    auth_cfg['password'] = AUTH_PASSWORD
     save_json(AUTH_FILE, auth_cfg)
-    print(f'Auth token: {token}')
-else:
-    print(f'Auth token: {auth_cfg["token"]}')
-need_auth = bool(auth_cfg.get('token'))
+    print(f'Default admin password set: {AUTH_PASSWORD}')
+need_auth = True
 
 initialized = os.path.exists(CONFIG_FILE)
 default_disk_count = detected or model_info.get('disk_count') or 4
@@ -464,6 +497,9 @@ led_names = LED_BASE + [f'disk{i}' for i in range(1, disk_count + 1)]
 print(f'Active LEDs: {led_names}')
 
 ctrl = LEDController(led_names)
+saved_colors = load_json(STATE_COLORS_FILE, {})
+ctrl._colors = saved_colors.get('colors', {})
+ctrl._brightnesses = saved_colors.get('brightnesses', {})
 ctrl._disk_map = detect_disks()
 ctrl._disk_presence = detect_disk_presence(ctrl._disk_map)
 ctrl.restore_state(hardware_modes=hardware_modes, apply_hardware=initialized)
@@ -693,6 +729,33 @@ INIT_HTML = r'''<!DOCTYPE html>
 </body>
 </html>'''
 
+LOGIN_HTML = r'''<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>指示灯控制 - 登录</title>
+<style>{css}</style>
+</head>
+<body>
+<div class="nc">
+ <div class="ncase">
+  <div class="hbar">
+   <div class="hicon"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg></div>
+   <h1 class="htitle">指示灯控制</h1>
+  </div>
+  <div class="ssection" style="text-align:center;padding:40px 24px">
+   <form onsubmit="login(event)" style="display:flex;flex-direction:column;gap:16px;max-width:300px;margin:0 auto">
+    <input id="pw" type="password" placeholder="管理员密码" style="padding:12px 16px;border-radius:8px;border:1px solid rgba(255,255,255,0.1);background:#2a2a2a;color:#e0e0e0;font-size:16px;text-align:center;outline:none">
+    <button type="submit" style="padding:12px;border-radius:8px;border:none;background:linear-gradient(180deg,#00aa66 0%,#008844 100%);color:white;font-size:16px;font-weight:600;cursor:pointer">登录</button>
+   </form>
+  </div>
+ </div>
+</div>
+<script>function login(e){{e.preventDefault();fetch('/api/login',{{method:'POST',body:JSON.stringify({{password:document.getElementById('pw').value}})}}).then(r=>r.json()).then(d=>{{if(d.success)location.href='/';else alert('密码错误')}})}}</script>
+</body>
+</html>'''
+
 
 def build_page():
     bays = '\n'.join(bay_html(i) for i in range(1, disk_count + 1))
@@ -719,6 +782,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path in ('/', '/index.html'):
             self._html(200, build_page() if initialized else build_init_page())
+        elif self.path == '/login':
+            self._html(200, LOGIN_HTML.replace('{css}', CSS))
         elif self.path == '/api/status':
             self._json(200, {
                 'success': True,
@@ -737,11 +802,13 @@ class Handler(BaseHTTPRequestHandler):
                 'hardware_leds': sorted(led_statuses.keys()),
                 'probe_error': probe_error,
             })
+        elif self.path == '/api/auth-status':
+            self._json(200, {'authenticated': check_auth(self.headers)})
         else:
             self._json(404, {})
 
     def do_POST(self):
-        if need_auth and not check_auth(self.headers):
+        if self.path != '/api/login' and need_auth and not check_auth(self.headers):
             return self._json(401, {'success': False, 'message': 'Unauthorized'})
         body = self._body()
         try:
@@ -751,6 +818,10 @@ class Handler(BaseHTTPRequestHandler):
 
         if self.path == '/api/control':
             self._control(data)
+        elif self.path == '/api/login':
+            self._login(data)
+        elif self.path == '/api/auth-status':
+            self._json(200, {'authenticated': check_auth(self.headers)})
         elif self.path in ('/api/all/off', '/api/all/on', '/api/all/auto'):
             mode = self.path.rsplit('/', 1)[-1]
             self._all(mode)
@@ -806,6 +877,9 @@ class Handler(BaseHTTPRequestHandler):
             led_names = LED_BASE + [f'disk{i}' for i in range(1, disk_count + 1)]
             ctrl.stop_monitor()
             ctrl = LEDController(led_names)
+            saved_colors = load_json(STATE_COLORS_FILE, {})
+            ctrl._colors = saved_colors.get('colors', {})
+            ctrl._brightnesses = saved_colors.get('brightnesses', {})
             ctrl._disk_map = detect_disks()
             ctrl._disk_presence = detect_disk_presence(ctrl._disk_map)
             ctrl.restore_state(hardware_modes=hardware_modes)
@@ -841,11 +915,28 @@ class Handler(BaseHTTPRequestHandler):
         led_names = LED_BASE + [f'disk{i}' for i in range(1, disk_count + 1)]
         ctrl.stop_monitor()
         ctrl = LEDController(led_names)
+        saved_colors = load_json(STATE_COLORS_FILE, {})
+        ctrl._colors = saved_colors.get('colors', {})
+        ctrl._brightnesses = saved_colors.get('brightnesses', {})
         ctrl._disk_map = detect_disks()
         ctrl._disk_presence = detect_disk_presence(ctrl._disk_map)
         ctrl.restore_state(hardware_modes=hardware_modes, apply_hardware=False)
         ctrl.start_monitor()
         self._json(200, {'success': True, 'message': '配置已重置', 'initialized': initialized})
+
+    def _login(self, data):
+        password = data.get('password', '')
+        if password == AUTH_PASSWORD:
+            session_token = base64.b64encode(secrets.token_bytes(32)).decode()
+            auth_cfg['session'] = session_token
+            save_json(AUTH_FILE, auth_cfg)
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json; charset=utf-8')
+            self.send_header('Set-Cookie', f'led_session={session_token}; Path=/; HttpOnly; SameSite=Strict')
+            self.end_headers()
+            self.wfile.write(json.dumps({'success': True}, ensure_ascii=False).encode('utf-8'))
+        else:
+            self._json(401, {'success': False, 'message': '密码错误'})
 
     def _color(self, data):
         led = data.get('led', '')
@@ -854,8 +945,14 @@ class Handler(BaseHTTPRequestHandler):
         b = data.get('b', 0)
         if led not in led_names:
             return self._json(400, {'success': False, 'message': f'无效指示灯: {led}'})
+        if led.startswith('disk'):
+            m = re.match(r'disk(\d+)', led)
+            if m and not ctrl._disk_presence.get(int(m.group(1)), False):
+                return self._json(400, {'success': False, 'message': '该槽位无硬盘'})
         ok, _, err = run(led, '-color', str(r), str(g), str(b))
         if ok:
+            ctrl._colors[led] = [r, g, b]
+            save_json(STATE_COLORS_FILE, {'colors': ctrl._colors, 'brightnesses': ctrl._brightnesses})
             self._json(200, {'success': True, 'message': f'{led} color set to RGB({r},{g},{b})'})
         else:
             self._json(500, {'success': False, 'message': err or '设置颜色失败'})
@@ -865,8 +962,14 @@ class Handler(BaseHTTPRequestHandler):
         brightness = data.get('brightness', 0)
         if led not in led_names:
             return self._json(400, {'success': False, 'message': f'无效指示灯: {led}'})
+        if led.startswith('disk'):
+            m = re.match(r'disk(\d+)', led)
+            if m and not ctrl._disk_presence.get(int(m.group(1)), False):
+                return self._json(400, {'success': False, 'message': '该槽位无硬盘'})
         ok, _, err = run(led, '-brightness', str(brightness))
         if ok:
+            ctrl._brightnesses[led] = brightness
+            save_json(STATE_COLORS_FILE, {'colors': ctrl._colors, 'brightnesses': ctrl._brightnesses})
             self._json(200, {'success': True, 'message': f'{led} brightness set to {brightness}'})
         else:
             self._json(500, {'success': False, 'message': err or '设置亮度失败'})
