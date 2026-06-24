@@ -537,7 +537,7 @@ ctrl._colors = saved_colors.get('colors', {})
 ctrl._brightnesses = saved_colors.get('brightnesses', {})
 ctrl._disk_map = detect_disks()
 ctrl._disk_presence = detect_disk_presence(ctrl._disk_map)
-ctrl.restore_state(hardware_modes=hardware_modes, apply_hardware=initialized)
+ctrl.restore_state(hardware_modes=hardware_modes, apply_hardware=True)
 ctrl.start_monitor()
 
 # ── HTML ──────────────────────────────────────────────────
@@ -967,7 +967,7 @@ class Handler(BaseHTTPRequestHandler):
             ctrl._brightnesses = saved_colors.get('brightnesses', {})
             ctrl._disk_map = detect_disks()
             ctrl._disk_presence = detect_disk_presence(ctrl._disk_map)
-            ctrl.restore_state(hardware_modes=hardware_modes)
+            ctrl.restore_state(hardware_modes=hardware_modes, apply_hardware=True)
             ctrl.start_monitor()
             self._json(200, {'success': True, 'message': f'已切换到 {disk_count} 盘位', 'disk_count': disk_count, 'leds': led_names})
         else:
@@ -1005,7 +1005,7 @@ class Handler(BaseHTTPRequestHandler):
         ctrl._brightnesses = saved_colors.get('brightnesses', {})
         ctrl._disk_map = detect_disks()
         ctrl._disk_presence = detect_disk_presence(ctrl._disk_map)
-        ctrl.restore_state(hardware_modes=hardware_modes, apply_hardware=False)
+        ctrl.restore_state(hardware_modes=hardware_modes, apply_hardware=True)
         ctrl.start_monitor()
         self._json(200, {'success': True, 'message': '配置已重置', 'initialized': initialized})
 
