@@ -1,7 +1,7 @@
 [
     {"id": "dxp4800",  "name": "DXP4800",        "disk_count": 4, "verified": true,  "image": true},
     {"id": "dxp2800",  "name": "DXP2800",         "disk_count": 2, "verified": false, "image": false},
-    {"id": "dxp4800plus","name": "DXP4800 Plus",  "disk_count": 4, "verified": false, "image": false},
+    {"id": "dxp4800plus","name": "DXP4800 Plus",  "disk_count": 4, "verified": true, "image": false},
     {"id": "dxp6800pro","name": "DXP6800 Pro",    "disk_count": 6, "verified": false, "image": false},
     {"id": "dxp8800plus","name": "DXP8800 Plus",  "disk_count": 8, "verified": false, "image": false},
     {"id": "dx4600pro", "name": "DX4600 Pro",     "disk_count": 4, "verified": true,  "image": false},

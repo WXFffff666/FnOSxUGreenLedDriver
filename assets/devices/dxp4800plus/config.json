@@ -7,6 +7,6 @@
     "i2c_addr": "0x3a",
     "driver": "ugreen_leds_cli",
     "supported": true,
-    "verified": false,
+    "verified": true,
     "note": "社区报告可用，前面板带显示屏，外观与 DXP4800 不同"
 }
