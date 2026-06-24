@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-FnUGreenLed v5.3 — LED Controller for UGREEN NAS
+FnUGreenLed v5.5 — LED Controller for UGREEN NAS
 - Three LED states: off / solid on / auto (responsive blink)
 - Disk I/O monitoring via /sys/block/*/stat
 - Network traffic monitoring via /sys/class/net/*/statistics
@@ -310,7 +310,7 @@ class LEDController:
             # Power LED always on in auto mode (system is running)
             if led == 'power' and mode == 'auto':
                 run(led, '-on', '-color', '255', '255', '255')
-            if apply_hardware and led not in hardware_modes:
+            if apply_hardware:
                 ok, msg = self._apply(led, mode, activity=False)
                 if not ok:
                     print(f'Restore {led} failed: {msg}')
@@ -421,7 +421,7 @@ class LEDController:
 
 # ── init ──────────────────────────────────────────────────
 
-print(f'FnUGreenLed v5.3  port={PORT}  var={VAR}')
+print(f'FnUGreenLed v5.5  port={PORT}  var={VAR}')
 
 auth_cfg = load_json(AUTH_FILE, {})
 if 'password' not in auth_cfg:
@@ -564,12 +564,13 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica N
 '''
 
 JS = r'''
+function changePw(){var o=document.getElementById('pw-old').value;var n=document.getElementById('pw-new').value;if(!o||!n||n.length<3){alert('请填写完整,新密码至少3位');return}fetch('/api/change-password',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({old_password:o,new_password:n})}).then(function(r){return r.json()}).then(function(d){if(d.success){alert('密码已修改!');document.getElementById('pwform').classList.remove('show');document.getElementById('pw-old').value='';document.getElementById('pw-new').value=''}else alert(d.message)})}
 (function(){
 var LEDS=__LEDS_JSON__;
 var modes=__INIT_MODES__;
 var MODE_LABEL=['关闭','常亮','自动'];
 function api(m,p,b){var o={method:m,headers:{'Content-Type':'application/json'}};if(b)o.body=JSON.stringify(b);return fetch(p,o).then(function(r){return r.json()}).catch(function(e){return{success:false,message:e.message}})}
-function updateUI(led,mode,activity){modes[led]=mode;var el=document.getElementById(led+'-led');if(el){el.classList.remove('on','auto');if(mode==='on')el.classList.add('on')}
+function updateUI(led,mode,activity){modes[led]=mode;var el=document.getElementById(led+'-led');if(el){el.classList.remove('on','auto');if(mode==='on'||mode==='auto')el.classList.add('on')}
 var tgl=document.querySelector('.tgl3[data-led="'+led+'"]');if(tgl){tgl.classList.remove('st0','st1','st2');var labels=['关闭','常亮','自动'];var states=['st0','st1','st2'];var idx=['off','on','auto'].indexOf(mode);if(idx>=0){tgl.classList.add(states[idx]);tgl.querySelector('.tlbl3').textContent=labels[idx]}}
 var bay=document.querySelector('.dbay[data-led="'+led+'"]');if(bay){bay.classList.toggle('active',mode!=='off')}
 var statusDot=document.getElementById('system-status');if(statusDot&&mode!=='off'){statusDot.style.animationName=(mode==='auto')?'autoPulse':'pulse'}}
@@ -578,8 +579,7 @@ function lname(l){var m=l.match(/^disk(\d+)$/);if(m)return'磁盘'+m[1]+'灯';if
 function cycleMode(led){var order=['off','on','auto'];var idx=order.indexOf(modes[led]||'off');var next=order[(idx+1)%3];api('POST','/api/control',{led:led,action:next}).then(function(r){if(r.success){updateUI(led,next);toast(lname(led)+' → '+MODE_LABEL[(idx+1)%3])}else toast('操作失败: '+r.message,'err')})}
 function allMode(mode){var label=MODE_LABEL[['off','on','auto'].indexOf(mode)];toast('正在将所有指示灯设为: '+label);api('POST','/api/all/'+mode,{}).then(function(r){if(r.success){LEDS.forEach(function(led){updateUI(led,mode)});toast('所有指示灯已设为: '+label)}else toast('操作失败: '+r.message,'err')})}
 function resetConfig(){if(!confirm('重置会清空本地配置和保存的指示灯模式，并返回初始化页面。继续吗？'))return;api('POST','/api/reset',{}).then(function(r){if(r.success){toast('配置已重置');setTimeout(function(){location.href='/'},500)}else toast('重置失败: '+r.message,'err')})}
-function pollStatus(){api('GET','/api/status').then(function(r){if(r.success&&r.activity){for(var led in r.activity){if(modes[led]==='auto'){var el=document.getElementById(led+'-led');if(el){el.classList.remove('auto');if(r.activity[led])el.classList.add('on');else el.classList.remove('on')}}}}})}
-function changePw(){var o=document.getElementById('pw-old').value;var n=document.getElementById('pw-new').value;if(!o||!n||n.length<3){alert('请填写完整,新密码至少3位');return}fetch('/api/change-password',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({old_password:o,new_password:n})}).then(function(r){return r.json()}).then(function(d){if(d.success){alert('密码已修改!');document.getElementById('pwform').classList.remove('show');document.getElementById('pw-old').value='';document.getElementById('pw-new').value=''}else alert(d.message)})}
+function pollStatus(){api('GET','/api/status').then(function(r){if(r.success&&r.activity){for(var led in r.activity){if(modes[led]==='auto'){var el=document.getElementById(led+'-led');if(el){el.classList.remove('auto');el.classList.add('on')}}}}})}
 function init(){
 document.querySelectorAll('.tgl3').forEach(function(t){t.addEventListener('click',function(e){e.preventDefault();e.stopPropagation();var l=t.dataset.led;if(l&&LEDS.indexOf(l)!==-1)cycleMode(l)})});
 document.querySelectorAll('.dbay').forEach(function(b){b.addEventListener('click',function(e){if(e.target.closest('.tgl3'))return;var l=b.dataset.led;if(l&&LEDS.indexOf(l)!==-1)cycleMode(l)})});
