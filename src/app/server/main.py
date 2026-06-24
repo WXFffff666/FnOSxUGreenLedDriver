@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-FnUGreenLed v5.6 — LED Controller for UGREEN NAS
+FnUGreenLed v5.7 — LED Controller for UGREEN NAS
 - Three LED states: off / solid on / auto (responsive blink)
 - Disk I/O monitoring via /sys/block/*/stat
 - Network traffic monitoring via /sys/class/net/*/statistics
@@ -78,9 +78,11 @@ def load_json(path, default):
     if os.path.exists(path):
         try:
             with open(path) as f:
-                return json.load(f)
-        except (json.JSONDecodeError, IOError):
-            pass
+                data = json.load(f)
+                print(f'Loaded: {path}')
+                return data
+        except Exception as e:
+            print(f'Load failed: {path} — {e}')
     return default
 
 def save_json(path, data):
@@ -88,8 +90,9 @@ def save_json(path, data):
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, 'w') as f:
             json.dump(data, f)
-    except IOError:
-        pass
+        print(f'Saved: {path}')
+    except Exception as e:
+        print(f'Save failed: {path} — {e}')
 
 def remove_file(path):
     try:
@@ -429,7 +432,7 @@ class LEDController:
 
 # ── init ──────────────────────────────────────────────────
 
-print(f'FnUGreenLed v5.6  port={PORT}  var={VAR}')
+print(f'FnUGreenLed v5.7  port={PORT}  var={VAR}')
 
 auth_cfg = load_json(AUTH_FILE, {})
 if 'password' not in auth_cfg:
