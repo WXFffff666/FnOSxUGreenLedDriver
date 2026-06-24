@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-FnUGreenLed v2.0 — LED Controller for UGREEN NAS
+FnUGreenLed v2.2 — LED Controller for UGREEN NAS
 - Three LED states: off / solid on / auto (responsive blink)
 - Disk I/O monitoring via /sys/block/*/stat
 - Network traffic monitoring via /sys/class/net/*/statistics
@@ -304,7 +304,7 @@ class LEDController:
         hardware_modes = hardware_modes or {}
         saved = load_json(STATE_FILE, {})
         for led in self.leds:
-            mode = hardware_modes.get(led, saved.get(led, 'off'))
+            mode = hardware_modes.get(led, saved.get(led, 'auto'))
             if mode not in VALID_MODES:
                 mode = 'off'
             # Force empty disk bays to 'off'
@@ -330,10 +330,6 @@ class LEDController:
         with self._lock:
             if led not in self.leds:
                 return False, f'Invalid LED: {led}'
-            if led.startswith('disk'):
-                m = re.match(r'disk(\d+)', led)
-                if m and not self._disk_presence.get(int(m.group(1)), False):
-                    return False, '该槽位无硬盘'
             ok, msg = self._apply(led, mode, activity=False)
             if not ok:
                 return False, msg
@@ -344,7 +340,8 @@ class LEDController:
 
     def _apply(self, led, mode, activity=False):
         """Set hardware LED state based on mode and activity."""
-        if led.startswith('disk'):
+        # Empty disk bay: auto mode = stay off; on/off = user wants control
+        if led.startswith('disk') and mode == 'auto':
             m = re.match(r'disk(\d+)', led)
             if m and not self._disk_presence.get(int(m.group(1)), False):
                 return True, 'OK'
@@ -455,7 +452,7 @@ class LEDController:
 
 # ── init ──────────────────────────────────────────────────
 
-print(f'FnUGreenLed v2.0  port={PORT}  var={VAR}')
+print(f'FnUGreenLed v2.2  port={PORT}  var={VAR}')
 
 model_info = detect_model()
 led_statuses, probe_error = probe_leds()
@@ -513,6 +510,7 @@ def bay_html(i):
    <div class="bhdr"><span class="bnum">{i:02d}</span><div class="led sm" id="disk{i}-led"></div></div>
    <div class="bbody"><div class="dicon"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M2 12h20v6H2zm0-4h20v2H2zm2-6h16c1.1 0 2 .9 2 2v2H2V4c0-1.1.9-2 2-2z"/></svg></div></div>
    <div class="bfooter"><div class="tgl3 sm3" data-led="disk{i}"><div class="trk3"><div class="thm3"></div></div><span class="tlbl3"></span></div></div>
+   <input type="color" class="colpick" data-led="disk{i}" value="#00ff88" title="颜色">
   </div>
  </div>'''
 
@@ -540,6 +538,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica N
 .led.on{background:radial-gradient(circle at 30% 30%,var(--lon) 0%,#00cc66 50%,#008844 100%);box-shadow:var(--log);border-color:#006633}
 .led.auto{background:radial-gradient(circle at 30% 30%,var(--lon) 0%,#00cc66 50%,#008844 100%);box-shadow:var(--log);border-color:#006633;animation:autoPulse 1.5s ease-in-out infinite}
 .led.sm{width:14px;height:14px}
+.colpick{width:24px;height:24px;border:none;background:transparent;cursor:pointer;padding:0}
+.brslider{width:60px;height:4px;-webkit-appearance:none;background:#444;border-radius:2px;outline:none;margin-left:8px}
+.brslider::-webkit-slider-thumb{-webkit-appearance:none;width:12px;height:12px;border-radius:50%;background:var(--lon);cursor:pointer}
 /* 3-state toggle */
 .tgl3{display:flex;flex-direction:column;align-items:center;gap:6px;cursor:pointer;user-select:none}
 .trk3{width:62px;height:30px;background:var(--sto);border-radius:15px;border:2px solid #111;position:relative;box-shadow:inset 0 2px 4px rgba(0,0,0,0.5),0 1px 0 rgba(255,255,255,0.1);transition:all 0.3s ease}
@@ -619,8 +620,11 @@ document.getElementById('btn-all-on').addEventListener('click',function(){allMod
 document.getElementById('btn-all-off').addEventListener('click',function(){allMode('off')});
 var autoBtn=document.getElementById('btn-all-auto');if(autoBtn)autoBtn.addEventListener('click',function(){allMode('auto')});
 var resetBtn=document.getElementById('btn-reset');if(resetBtn)resetBtn.addEventListener('click',resetConfig);
-var chpwBtn=document.getElementById('btn-change-pw');if(chpwBtn)chpwBtn.addEventListener('click',function(){var oldPw=prompt('请输入旧密码:');if(!oldPw)return;var newPw=prompt('请输入新密码(至少3位):');if(!newPw||newPw.length<3){alert('新密码至少需要3位');return}api('POST','/api/change-password',{old_password:oldPw,new_password:newPw}).then(function(r){if(r.success){alert('密码修改成功！');location.href='/login'}else alert('修改失败: '+r.message)})});
-LEDS.forEach(function(led){updateUI(led,modes[led]||'off')});
+    var chpwBtn=document.getElementById('btn-change-pw');if(chpwBtn)chpwBtn.addEventListener('click',function(){var oldPw=prompt('请输入旧密码:');if(!oldPw)return;var newPw=prompt('请输入新密码(至少3位):');if(!newPw||newPw.length<3){alert('新密码至少需要3位');return}api('POST','/api/change-password',{old_password:oldPw,new_password:newPw}).then(function(r){if(r.success){alert('密码修改成功！');location.href='/login'}else alert('修改失败: '+r.message)})});
+    document.querySelectorAll('.colpick').forEach(function(cp){cp.addEventListener('input',function(){var led=cp.dataset.led;api('POST','/api/color',{led:led,r:parseInt(cp.value.substr(1,2),16),g:parseInt(cp.value.substr(3,2),16),b:parseInt(cp.value.substr(5,2),16)}).then(function(r){if(!r.success)toast('颜色设置失败: '+r.message,'err')})})});
+    var brSlider=document.querySelector('.brslider');if(brSlider){brSlider.addEventListener('input',function(){LEDS.forEach(function(led){api('POST','/api/brightness',{led:led,brightness:parseInt(brSlider.value)})})})}
+    var marqBtn=document.getElementById('btn-marquee');if(marqBtn)marqBtn.addEventListener('click',function(){var disks=[];LEDS.forEach(function(l){if(l.match(/^disk/))disks.push(l)});if(disks.length<2)return;disks.forEach(function(d,i){var c=['#ff0000','#00ff00','#0000ff','#ffff00','#ff00ff','#00ffff'];setTimeout(function(){api('POST','/api/color',{led:d,r:parseInt(c[i%6].substr(1,2),16),g:parseInt(c[i%6].substr(3,2),16),b:parseInt(c[i%6].substr(5,2),16)}).then(function(r){if(r.success)api('POST','/api/control',{led:d,action:'auto'})})},i*300)})});
+    LEDS.forEach(function(led){updateUI(led,modes[led]||'off')});
 setInterval(pollStatus,800)
 }
 if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',init);else init()
@@ -654,6 +658,7 @@ HTML = r'''<!DOCTYPE html>
    <div class="hicon"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg></div>
    <h1 class="htitle">指示灯控制</h1>
    <span class="badge">{disk_count}盘位</span>
+   <input type="range" class="brslider" min="0" max="255" value="255" title="亮度">
    <div class="hstatus"><span class="sdot" id="system-status"></span></div>
   </div>
   <div class="legend">
@@ -665,13 +670,15 @@ HTML = r'''<!DOCTYPE html>
    <div class="spanel">
     <div class="sitem" data-led="power">
      <div class="sheader"><span class="slabel">电源</span><div class="led" id="power-led"></div></div>
-     <div class="tgl3" data-led="power"><div class="trk3"><div class="thm3"></div></div><span class="tlbl3"></span></div>
-    </div>
+      <div class="tgl3" data-led="power"><div class="trk3"><div class="thm3"></div></div><span class="tlbl3"></span></div>
+      <input type="color" class="colpick" data-led="power" value="#00ff88" title="颜色">
+     </div>
     <div class="divider"></div>
     <div class="sitem" data-led="netdev">
      <div class="sheader"><span class="slabel">网络</span><div class="led" id="netdev-led"></div></div>
-     <div class="tgl3" data-led="netdev"><div class="trk3"><div class="thm3"></div></div><span class="tlbl3"></span></div>
-    </div>
+      <div class="tgl3" data-led="netdev"><div class="trk3"><div class="thm3"></div></div><span class="tlbl3"></span></div>
+      <input type="color" class="colpick" data-led="netdev" value="#00ff88" title="颜色">
+     </div>
    </div>
   </div>
   <div class="dsection">
@@ -683,9 +690,10 @@ HTML = r'''<!DOCTYPE html>
   <div class="fbar">
    <button class="abtn" id="btn-all-on"><span class="bicon"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg></span>全部常亮</button>
    <button class="abtn auto" id="btn-all-auto"><span class="bicon"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 6V3L8 7l4 4V8c2.21 0 4 1.79 4 4 0 .68-.17 1.32-.47 1.88l1.46 1.46C17.63 14.38 18 13.23 18 12c0-3.31-2.69-6-6-6zm-4 6c0-.68.17-1.32.47-1.88L7.01 8.66C6.37 9.62 6 10.77 6 12c0 3.31 2.69 6 6 6v3l4-4-4-4v3c-2.21 0-4-1.79-4-4z"/></svg></span>全部自动</button>
-   <button class="abtn s" id="btn-all-off"><span class="bicon"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg></span>全部关闭</button>
-  </div>
-   <div class="fbar">
+    <button class="abtn s" id="btn-all-off"><span class="bicon"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg></span>全部关闭</button>
+    <button class="abtn" id="btn-marquee" style="background:linear-gradient(180deg,#ff8800 0%,#aa5500 100%)">🏃 跑马灯</button>
+   </div>
+    <div class="fbar">
     <button class="abtn" id="btn-change-pw" style="background:linear-gradient(180deg,#666 0%,#444 100%)"><span class="bicon"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm3.1-9H8.9V6c0-1.71 1.39-3.1 3.1-3.1s3.1 1.39 3.1 3.1v2z"/></svg></span>修改密码</button>
     <button class="abtn danger" id="btn-reset"><span class="bicon"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 5V2L7 7l5 5V9c2.76 0 5 2.24 5 5 0 1.04-.32 2-.86 2.8l1.46 1.46C18.48 17.08 19 15.6 19 14c0-3.87-3.13-7-7-7zm-5.6.74C5.52 6.92 5 8.4 5 10c0 3.87 3.13 7 7 7v3l5-5-5-5v3c-2.76 0-5-2.24-5-5 0-1.04.32-2 .86-2.8L6.4 5.74z"/></svg></span>重置配置</button>
    </div>
@@ -783,7 +791,10 @@ def build_init_page():
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path in ('/', '/index.html'):
-            self._html(200, build_page() if initialized else build_init_page())
+            if need_auth and not check_auth(self.headers):
+                self._html(200, LOGIN_HTML.replace('{css}', CSS))
+            else:
+                self._html(200, build_page() if initialized else build_init_page())
         elif self.path == '/login':
             self._html(200, LOGIN_HTML.replace('{css}', CSS))
         elif self.path == '/api/status':
