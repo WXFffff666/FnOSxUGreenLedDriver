@@ -497,6 +497,11 @@ if 'password' not in auth_cfg:
     auth_cfg['password'] = AUTH_PASSWORD
     save_json(AUTH_FILE, auth_cfg)
     print(f'Default admin password set: {AUTH_PASSWORD}')
+
+# Invalidate any previous session from old install/upgrade
+if auth_cfg.get('session'):
+    auth_cfg['session'] = ''
+    save_json(AUTH_FILE, auth_cfg)
 need_auth = True
 
 initialized = os.path.exists(CONFIG_FILE)
