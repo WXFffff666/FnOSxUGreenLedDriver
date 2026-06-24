@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-FnUGreenLed v5.2 — LED Controller for UGREEN NAS
+FnUGreenLed v5.3 — LED Controller for UGREEN NAS
 - Three LED states: off / solid on / auto (responsive blink)
 - Disk I/O monitoring via /sys/block/*/stat
 - Network traffic monitoring via /sys/class/net/*/statistics
@@ -304,6 +304,8 @@ class LEDController:
                 m = re.match(r'disk(\d+)', led)
                 if m and int(m.group(1)) not in self._disk_map:
                     self.modes[led] = 'off'
+                    self.activity[led] = False
+                    self._apply(led, 'off', activity=False)
                     continue
             # Power LED always on in auto mode (system is running)
             if led == 'power' and mode == 'auto':
@@ -343,6 +345,7 @@ class LEDController:
 
     def _persist(self):
         save_json(STATE_FILE, dict(self.modes))
+        print(f'Saved state: {self.modes}')
 
     # ── background monitor ────────────────────────────────
 
@@ -418,7 +421,7 @@ class LEDController:
 
 # ── init ──────────────────────────────────────────────────
 
-print(f'FnUGreenLed v5.2  port={PORT}  var={VAR}')
+print(f'FnUGreenLed v5.3  port={PORT}  var={VAR}')
 
 auth_cfg = load_json(AUTH_FILE, {})
 if 'password' not in auth_cfg:
