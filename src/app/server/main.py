@@ -103,6 +103,7 @@ def remove_file(path):
     return None
 
 def check_auth(headers):
+    """Check session cookie only — no token fallback."""
     cookie_header = headers.get('Cookie', '')
     cookies = {}
     for item in cookie_header.split(';'):
@@ -110,13 +111,7 @@ def check_auth(headers):
             k, v = item.strip().split('=', 1)
             cookies[k] = v
     session = cookies.get('led_session', '')
-    if session and session == auth_cfg.get('session', ''):
-        return True
-    token = headers.get('X-Auth-Token', '')
-    stored = auth_cfg.get('token', '')
-    if token and stored and token == stored:
-        return True
-    return False
+    return bool(session and session == auth_cfg.get('session', ''))
 
 # ── hardware probe ───────────────────────────────────────
 
@@ -504,10 +499,6 @@ if 'password' not in auth_cfg:
     print(f'Default admin password set: {AUTH_PASSWORD}')
 need_auth = True
 
-if not auth_cfg.get('token'):
-    auth_cfg['token'] = secrets.token_hex(16)
-    save_json(AUTH_FILE, auth_cfg)
-
 initialized = os.path.exists(CONFIG_FILE)
 default_disk_count = detected or model_info.get('disk_count') or 4
 cfg = load_json(CONFIG_FILE, {
@@ -659,7 +650,7 @@ JS = r'''
 (function(){
 var LEDS=__LEDS_JSON__;
 var modes=__INIT_MODES__;
-function api(m,p,b){var o={method:m,headers:{'Content-Type':'application/json','X-Auth-Token':__AUTH_TOKEN__}};if(b)o.body=JSON.stringify(b);return fetch(p,o).then(function(r){return r.json()}).catch(function(e){return{success:false,message:e.message}})}
+function api(m,p,b){var o={method:m,headers:{'Content-Type':'application/json'}};if(b)o.body=JSON.stringify(b);return fetch(p,o).then(function(r){return r.json()}).catch(function(e){return{success:false,message:e.message}})}
 function updateUI(led,mode,activity){modes[led]=mode;var el=document.getElementById(led+'-led');if(el){el.classList.remove('on','auto');if(mode==='on'||mode==='blink')el.classList.add('on')}
 var btns=document.querySelectorAll('.mbtn[onclick*="'+led+'"]');btns.forEach(function(b){b.classList.remove('active');if(b.classList.contains(mode))b.classList.add('active')})
 var tgl=document.querySelector('.tgl3[data-led="'+led+'"]');if(tgl){tgl.classList.remove('st0','st1','st2');var labels=['关闭','常亮','自动'];var states=['st0','st1','st2'];var idx=['off','on','auto'].indexOf(mode);if(idx>=0){tgl.classList.add(states[idx]);tgl.querySelector('.tlbl3').textContent=labels[idx]}}
@@ -695,7 +686,7 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
 INIT_JS = r'''
 (function(){
 var selected=__INIT_DISK_COUNT__;
-function api(m,p,b){var o={method:m,headers:{'Content-Type':'application/json','X-Auth-Token':__AUTH_TOKEN__}};if(b)o.body=JSON.stringify(b);return fetch(p,o).then(function(r){return r.json()}).catch(function(e){return{success:false,message:e.message}})}
+function api(m,p,b){var o={method:m,headers:{'Content-Type':'application/json'}};if(b)o.body=JSON.stringify(b);return fetch(p,o).then(function(r){return r.json()}).catch(function(e){return{success:false,message:e.message}})}
 function mark(){document.querySelectorAll('.choice').forEach(function(btn){btn.classList.toggle('active',parseInt(btn.dataset.count,10)===selected)})}
 function toast(m,t){t=t||'ok';var e=document.getElementById('toast');e.textContent=m;e.className='toast show '+t;setTimeout(function(){e.classList.remove('show')},2500)}
 function save(){api('POST','/api/config',{disk_count:selected,model:'manual'}).then(function(r){if(r.success){location.href='/'}else toast('初始化失败: '+r.message,'err')})}
@@ -845,7 +836,6 @@ LOGIN_HTML = r'''<!DOCTYPE html>
 def build_page():
     bays = '\n'.join(bay_html(i) for i in range(1, disk_count + 1))
     js = (JS
-        .replace('__AUTH_TOKEN__', json.dumps(auth_cfg.get('token', '')))
         .replace('__LEDS_JSON__', json.dumps(led_names))
         .replace('__INIT_MODES__', json.dumps(ctrl.modes)))
     return HTML.replace('{css}', CSS).replace('{js}', js).replace('{disk_count}', str(disk_count)).replace('{disk_bays}', bays)
@@ -853,7 +843,7 @@ def build_page():
 def build_init_page():
     cfg_count = cfg.get('disk_count', 4)
     suggested = detected if detected in (2, 4, 6, 8) else (cfg_count if cfg_count in (2, 4, 6, 8) else 4)
-    js = INIT_JS.replace('__AUTH_TOKEN__', json.dumps(auth_cfg.get('token', ''))).replace('__INIT_DISK_COUNT__', str(suggested))
+    js = INIT_JS.replace('__INIT_DISK_COUNT__', str(suggested))
     return INIT_HTML.replace('{css}', CSS).replace('{js}', js).replace('{detected}', str(detected or '未识别'))
 
 # ── HTTP handler ───────────────────────────────────────
